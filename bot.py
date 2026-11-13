@@ -964,7 +964,7 @@ if _missing_env:
     logger.error("[سیستم] متغیرهای محیطی تنظیم نشده‌اند: %s (آنها را در Railway > Variables اضافه کنید)", ", ".join(_missing_env))
     raise SystemExit(1)
 
-DATA_FILE ="bot_data.json"
+DATA_FILE = os.environ.get("DATA_FILE", "bot_data.json")
 TEHRAN_TIMEZONE =ZoneInfo ("Asia/Tehran")
 LOGIN_STATES ={}
 LOGIN_RATE_LIMIT ={}
