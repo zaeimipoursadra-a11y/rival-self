@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+sessions/
+*.session
+bot_data.json
+
+economy.db
+economy.db-wal
+economy.db-shm
+*.db

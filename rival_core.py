@@ -1,0 +1,1553 @@
+"""SELF RIVAL core: user keyboard, diamonds shop, referral, games, admin tools, background jobs.
+
+Installed from bot.py with ``rival_core.install(globals())`` once the manager bot,
+DataManager and helpers exist.  Everything here talks to the manager bot only; the
+per-user Pyrogram clients (self) are untouched except through start/stop helpers.
+"""
+from __future__ import annotations
+
+import asyncio
+import html
+import io
+import json
+import logging
+import os
+import re
+import sqlite3
+import time
+import uuid as _uuid
+from datetime import datetime
+
+import aiohttp
+from pyrogram import StopPropagation, filters
+
+from self_tools import economy as E
+
+log = logging.getLogger("rival_core")
+G: dict = {}
+HERE = os.path.dirname(os.path.abspath(__file__))
+ASSETS = os.path.join(HERE, "self_tools", "assets")
+BANNER = os.path.join(HERE, "self_tools", "rival_banner.jpg")
+SUPPORT_URL = "https://t.me/sadzr"
+PLACEHOLDER = "انتخاب کن - RIVAL"
+
+ASSET_FILES = {
+    "banner": BANNER,
+    "referral": os.path.join(ASSETS, "banner_referral.jpg"),
+    "bet": os.path.join(ASSETS, "banner_bet.jpg"),
+    "dooz": os.path.join(ASSETS, "banner_dooz.jpg"),
+    "balance": os.path.join(ASSETS, "card_balance.jpg"),
+}
+
+# ------------------------------------------------------------------ text helpers
+_FA = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
+_EN = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+
+
+def fa(n) -> str:
+    return f"{int(n):,}".replace(",", "٬").translate(_FA)
+
+
+def esc(s) -> str:
+    return html.escape(str(s if s is not None else ""))
+
+
+def mention(uid, name=None) -> str:
+    return f'<a href="tg://user?id={int(uid)}">{esc(name or uid)}</a>'
+
+
+def norm(t: str) -> str:
+    return re.sub(r"[\u0640\ufe0f\u200c\u200d\s]+", "", t or "")
+
+
+def to_int(s: str):
+    s = (s or "").translate(_EN).replace(",", "").replace("٬", "").strip()
+    return int(s) if s.isdigit() else None
+
+
+def utf16len(s: str) -> int:
+    return len(s.encode("utf-16-le")) // 2
+
+
+def kv(k, v) -> str:
+    return f"◈ {k} ⟢ {v}"
+
+
+def title(t: str, icon: str = "") -> str:
+    return f"<b>‹ ʀɪᴠᴀʟ ›  {icon + ' ' if icon else ''}{t}</b>"
+
+
+def eco() -> E.Economy:
+    return E.get()
+
+
+def admins() -> list:
+    try:
+        return [int(x) for x in G["data_manager"].get_admins()]
+    except Exception:
+        return [int(G.get("ROOT_ADMIN", 0))]
+
+
+def is_admin(uid) -> bool:
+    return int(uid) in admins() or int(uid) == int(G.get("ROOT_ADMIN", 0))
+
+
+def user_name(u) -> str:
+    n = " ".join(x for x in (getattr(u, "first_name", None), getattr(u, "last_name", None)) if x)
+    return n or getattr(u, "username", None) or str(getattr(u, "id", ""))
+
+
+def touch(u):
+    try:
+        eco().touch(u.id, getattr(u, "username", None), user_name(u))
+    except Exception:
+        pass
+
+
+# ------------------------------------------------------------------- copy (texts)
+WELCOME_HTML = (
+    "<b>👑 SELF RIVAL</b>\n"
+    "<i>فراتر از حد معمول</i>\n\n"
+    "سلف، دستیاری روی اکانت خودته؛ دستورها را در هر چتی می‌نویسی و اجرا می‌شود.\n\n"
+    "◈ <b>ابزار</b> ⟢ ترجمه، جستجو، هوش مصنوعی، دانلود، نرخ ارز\n"
+    "◈ <b>حریم</b> ⟢ ضدحذف، منشی خودکار، قفل پیوی\n"
+    "◈ <b>الماس</b> ⟢ اشتراک بخر یا رایگان بگیر\n"
+    "◈ <b>رقابت</b> ⟢ شرط‌بندی و دوز در گپ رسمی\n\n"
+    "از دکمه‌های پایین شروع کن 👇\n\n"
+    "⚡ 𝐒𝐄𝐋𝐅 𝐑𝐈𝐕𝐀𝐋 | 𝘽𝙪𝙞𝙡𝙩 𝘽𝙚𝙮𝙤𝙣𝙙 𝙇𝙞𝙢𝙞𝙩𝙨"
+)
+
+ABOUT_HTML = (
+    title("سلف چیست؟", "❓") + "\n\n"
+    "سلف یک ربات جداگانه نیست؛ <b>دستیاری است که روی خود اکانت تلگرامت کار می‌کند</b>. "
+    "بعد از فعال‌سازی، هر دستوری که در هر چتی (گروه، پیوی، کانال) بنویسی اجرا می‌شود و "
+    "نتیجه مثل پیام خودت دیده می‌شود. مثلاً <code>.پنل</code> پنل کنترل را باز می‌کند.\n\n"
+    "<b>چه کارهایی می‌کند؟</b>\n"
+    "◈ ساعت و تاریخ زنده در نام و بیو، فونت‌های ویژه\n"
+    "◈ ضدحذف و ضدویرایش پیام، ذخیره‌ی عکس‌های یک‌بارمصرف\n"
+    "◈ منشی خودکار، پاسخ خودکار به لیست‌های دوست، دشمن و کراش\n"
+    "◈ ترجمه، جستجو، هوش مصنوعی، نرخ ارز و طلا\n"
+    "◈ دانلود ویدیو و موزیک از لینک، ساخت استیکر و گیف\n"
+    "◈ ابزار گروه: تگ، پاک‌سازی پیام، ترک و حذف دسته‌جمعی\n"
+    "◈ بیش از ۵۰ ابزار کوچک با <code>/</code> یا <code>.</code> (ماشین‌حساب، QR، فونت و …)\n\n"
+    "<b>امنیت</b>\n"
+    "ورود فقط با کد رسمی تلگرام خودت انجام می‌شود، نشست رمزنگاری ذخیره می‌شود و هر لحظه با "
+    "«غیرفعال‌سازی» کاملاً از اکانتت خارج می‌شود.\n\n"
+    "<b>اشتراک</b>\n"
+    "هر ۵٬۰۰۰ الماس = ۳۰ روز سلف. هدیه‌ی شروع داری و الماس را می‌توانی بخری یا رایگان بگیری.\n\n"
+    "برای شروع «⚙️ مدیریت سلف» را بزن."
+)
+
+
+# ---------------------------------------------------------------------- buttons
+def B(text, style=None, **kw):
+    d = {"text": text, **kw}
+    if style:
+        d["_s"] = style
+    return d
+
+
+def mk(rows, styled=True):
+    out = []
+    for r in rows:
+        nr = []
+        for b in r:
+            b = dict(b)
+            s = b.pop("_s", None)
+            if styled and s:
+                b["style"] = s
+            nr.append(b)
+        out.append(nr)
+    return {"inline_keyboard": out}
+
+
+BTN = {
+    "manage": ("⚙️ مـدیـریـت ســلـف", "primary"),
+    "acc": ("👤 حساب کاربری", "success"),
+    "about": ("❓ سلف چیست", "success"),
+    "buy": ("🛒 خــریـد الــمــاس", "primary"),
+    "help": ("📨 پشتیبانی و راهنما", "danger"),
+    "free": ("💎 الماس رایگان", "success"),
+    "mini": ("☑️ مینی اپ", "danger"),
+}
+LAYOUT = [["manage"], ["acc", "about"], ["buy"], ["help", "free", "mini"]]
+KEYMAP = {norm(v[0]): k for k, v in BTN.items()}
+KEYMAP.update({norm("✅ فعالسازی"): "manage", norm("⛔ غیرفعال‌سازی"): "manage",
+               norm("📨 راهنما و پشتیبانی"): "help"})
+
+
+def main_kb_json(styled=True):
+    rows = []
+    for r in LAYOUT:
+        row = []
+        for k in r:
+            d = {"text": BTN[k][0]}
+            if styled:
+                d["style"] = BTN[k][1]
+            row.append(d)
+        rows.append(row)
+    return {"keyboard": rows, "resize_keyboard": True, "is_persistent": True,
+            "input_field_placeholder": PLACEHOLDER}
+
+
+def main_kb_pyro():
+    KB, RK = G["KeyboardButton"], G["ReplyKeyboardMarkup"]
+    rows = [[KB(BTN[k][0]) for k in r] for r in LAYOUT]
+    try:
+        return RK(rows, resize_keyboard=True, placeholder=PLACEHOLDER)
+    except TypeError:
+        return RK(rows, resize_keyboard=True)
+
+
+# ------------------------------------------------------------------ Bot API I/O
+async def api(method, payload, timeout=10.0):
+    return await G["bot_api_request"](method, payload, timeout)
+
+
+_FILE_IDS: dict = {}
+
+
+async def _post_photo(chat_id, photo, caption, markup, reply_to=None):
+    url = f"https://api.telegram.org/bot{G['BOT_TOKEN']}/sendPhoto"
+    form = aiohttp.FormData()
+    form.add_field("chat_id", str(chat_id))
+    form.add_field("caption", caption[:1024])
+    form.add_field("parse_mode", "HTML")
+    if markup:
+        form.add_field("reply_markup", json.dumps(markup, ensure_ascii=False))
+    if reply_to:
+        form.add_field("reply_parameters", json.dumps({"message_id": reply_to, "allow_sending_without_reply": True}))
+    key = photo if isinstance(photo, str) else None
+    if key and _FILE_IDS.get(key):
+        form.add_field("photo", _FILE_IDS[key])
+    else:
+        if key:
+            with open(ASSET_FILES[key], "rb") as f:
+                raw = f.read()
+        else:
+            raw = photo.getvalue() if hasattr(photo, "getvalue") else bytes(photo)
+        form.add_field("photo", raw, filename="card.jpg", content_type="image/jpeg")
+    async with aiohttp.ClientSession() as sess:
+        async with sess.post(url, data=form, timeout=aiohttp.ClientTimeout(total=30)) as r:
+            j = await r.json(content_type=None)
+    if j.get("ok") and key:
+        try:
+            _FILE_IDS[key] = j["result"]["photo"][-1]["file_id"]
+        except Exception:
+            pass
+    elif key and not j.get("ok"):
+        _FILE_IDS.pop(key, None)
+    return j
+
+
+async def send(chat_id, text, markup_fn=None, photo=None, reply_to=None):
+    """Send HTML text/photo. markup_fn(styled)->markup. Falls back to unstyled buttons."""
+    last = None
+    for styled in (True, False):
+        markup = markup_fn(styled) if markup_fn else None
+        try:
+            if photo is not None:
+                j = await _post_photo(chat_id, photo, text, markup, reply_to)
+                if not j.get("ok") and isinstance(photo, str) and _FILE_IDS.get(photo) is None:
+                    pass
+            else:
+                payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML",
+                           "disable_web_page_preview": True}
+                if markup:
+                    payload["reply_markup"] = markup
+                if reply_to:
+                    payload["reply_parameters"] = {"message_id": reply_to, "allow_sending_without_reply": True}
+                j = await api("sendMessage", payload)
+            if j.get("ok"):
+                return j["result"]
+            last = j
+        except Exception as e:  # network etc.
+            last = {"error": str(e)}
+    log.warning("send failed: %s", str(last)[:200])
+    return None
+
+
+async def edit(chat_id, msg_id, text, markup_fn=None, is_photo=False):
+    for styled in (True, False):
+        markup = markup_fn(styled) if markup_fn else {"inline_keyboard": []}
+        if is_photo:
+            payload = {"chat_id": chat_id, "message_id": msg_id, "caption": text[:1024], "parse_mode": "HTML",
+                       "reply_markup": markup}
+            j = await api("editMessageCaption", payload)
+        else:
+            payload = {"chat_id": chat_id, "message_id": msg_id, "text": text, "parse_mode": "HTML",
+                       "disable_web_page_preview": True, "reply_markup": markup}
+            j = await api("editMessageText", payload)
+        if j.get("ok") or "not modified" in str(j.get("description", "")).lower():
+            return True
+    return False
+
+
+async def notify(uid, text, markup_fn=None):
+    try:
+        await send(uid, text, markup_fn)
+    except Exception:
+        pass
+
+
+# -------------------------------------------------------------- forced join gate
+async def joined_all(uid):
+    """None = forced join not configured, True/False otherwise."""
+    dm = G["data_manager"]
+    chats = dm.data.get("global_fjoin_chats", [])
+    if not dm.data.get("global_fjoin_active", False) or not chats:
+        return None
+    CMS = G["ChatMemberStatus"]
+    for chat in chats:
+        try:
+            m = await G["manager_bot"].get_chat_member(chat, uid)
+            if m.status in (CMS.LEFT, CMS.BANNED):
+                return False
+        except Exception:
+            return False
+    return True
+
+
+class _Shim:
+    """Message-like wrapper so callbacks can reuse message-based helpers."""
+
+    def __init__(self, client, user, chat):
+        self._c, self.from_user, self.chat = client, user, chat
+        self.chat_id = chat.id
+
+    async def reply_text(self, text, **kw):
+        return await self._c.send_message(self.chat_id, text, **kw)
+
+
+async def gate(client, message) -> bool:
+    """Same prompt as the global forced-join check; False if the user must join first."""
+    if hasattr(message, "data") and hasattr(message, "message"):  # CallbackQuery
+        message = _Shim(client, message.from_user, message.message.chat)
+    elif message.__class__.__name__ == "Message" and message.from_user and getattr(message.from_user, "is_bot", False):
+        return True
+    try:
+        await G["manager_global_fjoin_check"](client, message)
+    except StopPropagation:
+        return False
+    return True
+
+
+# ============================================================== self management
+def sub_ok(uid) -> bool:
+    uid = int(uid)
+    return is_admin(uid) or eco().is_active(uid)
+
+
+def fmt_days(uid) -> str:
+    if is_admin(uid):
+        return "نامحدود (ادمین)"
+    d = eco().days_left(uid)
+    return f"{fa(d)} روز مانده" if d > 0 else "منقضی‌شده"
+
+
+def self_state(uid):
+    dm = G["data_manager"]
+    ud = dm.data.get("users", {}).get(str(uid), {})
+    if uid in G["ACTIVE_BOTS"]:
+        return "🟢 فعال و متصل", True, True
+    if ud.get("session_string"):
+        return "🟡 ثبت‌شده؛ در حال اتصال یا متوقف", False, True
+    return "🔴 فعال نشده", False, False
+
+
+def manage_text(uid) -> str:
+    st, _, _ = self_state(uid)
+    bal = eco().balance(uid)
+    return (title("مدیریت سلف", "⚙️") + "\n\n"
+            + kv("وضعیت", st) + "\n"
+            + kv("اشتراک", fmt_days(uid)) + "\n"
+            + kv("الماس", f"{fa(bal)} 💎") + "\n\n"
+            + "فرمان‌های سلف را در تلگرام خودت می‌نویسی؛ <code>.پنل</code> برای کنترل کامل.")
+
+
+def manage_markup(uid):
+    _, running, has = self_state(uid)
+
+    def fn(styled=True):
+        rows = []
+        if running or has:
+            rows.append([B("⏹ غیرفعال‌سازی", "danger", callback_data="rv:dask")])
+        else:
+            rows.append([B("▶️ فعال‌سازی", "success", callback_data="rv:act")])
+        if not is_admin(uid):
+            rows.append([B(f"🔁 تمدید ۳۰ روزه ({fa(E.DIAMONDS_PER_MONTH)} 💎)", "primary", callback_data="sb:buy")])
+        if running:
+            rows.append([B("🎛 پنل سلف", "primary", switch_inline_query_current_chat="panel")])
+        return mk(rows, styled)
+    return fn
+
+
+async def cmd_manage(client, message):
+    uid = message.from_user.id
+    await send(message.chat.id, manage_text(uid), manage_markup(uid))
+
+
+async def start_self_session(uid):
+    ud = G["data_manager"].data.get("users", {}).get(str(uid), {})
+    phone = ud.get("phone")
+    sess = G["_db_decrypt"](ud.get("session_string", "") or "")
+    if phone and sess:
+        asyncio.create_task(G["start_bot_instance"](sess, phone, uid, "stylized"))
+        return True
+    return False
+
+
+async def cb_self(client, cb):
+    uid = cb.from_user.id
+    chat_id = cb.message.chat.id if cb.message else uid
+    act = (cb.data or "").split(":", 1)[-1]
+    try:
+        if act == "act":
+            if not await gate(client, cb):  # join gate
+                return await cb.answer()
+            _, running, has = self_state(uid)
+            if has and not sub_ok(uid):
+                await cb.answer("اشتراکت تمام شده؛ اول تمدید کن.", show_alert=True)
+            else:
+                await cb.answer()
+                await G["start_handler"](client, G["_MenuMsg"](client, cb.from_user, chat_id, "فعال‌سازی سلف"))
+        elif act == "dask":
+            await cb.answer()
+            await edit(chat_id, cb.message.id,
+                       title("غیرفعال‌سازی", "⚠️") + "\n\nبا تأیید، ربات از اکانتت خارج می‌شود و سلف خاموش می‌شود. "
+                       "(روزهای باقی‌مانده‌ات سر جایش می‌ماند.)\nمطمئنی؟",
+                       lambda s=True: mk([[B("✅ تأیید", "success", callback_data="rv:dyes"),
+                                           B("❌ لغو", "danger", callback_data="rv:dno")]], s))
+        elif act == "dno":
+            await cb.answer("لغو شد")
+            await edit(chat_id, cb.message.id, manage_text(uid), manage_markup(uid))
+        elif act == "dyes":
+            await cb.answer()
+            await edit(chat_id, cb.message.id, "⏳ در حال غیرفعال‌سازی…")
+            try:
+                await G["_deactivate_self"](uid)
+                done = title("انجام شد", "✅") + "\n\nسلف خاموش شد و ربات از اکانتت خارج شد. هر وقت خواستی دوباره فعالش کن."
+            except Exception as e:
+                log.warning("deactivate failed: %s", e)
+                done = "❌ غیرفعال‌سازی کامل انجام نشد؛ دوباره امتحان کن."
+            await edit(chat_id, cb.message.id, done, manage_markup(uid))
+    finally:
+        cb.stop_propagation()
+
+
+async def cb_sub(client, cb):
+    uid = cb.from_user.id
+    chat_id = cb.message.chat.id if cb.message else uid
+    try:
+        try:
+            eco().buy_month(uid)
+        except E.EconomyError as e:
+            if e.code == "insufficient":
+                need = E.DIAMONDS_PER_MONTH - eco().balance(uid)
+                await cb.answer(f"{fa(need)} الماس کم داری.", show_alert=True)
+                await send(chat_id, title("الماس کافی نیست", "💎") + f"\n\nبرای ۳۰ روز، {fa(need)} الماس دیگر لازم داری.",
+                           lambda s=True: mk([[B("🛒 خرید الماس", "primary", callback_data="bg:menu"),
+                                               B("💎 الماس رایگان", "success", callback_data="rf:open")]], s))
+            else:
+                await cb.answer("خطا", show_alert=True)
+            return
+        await cb.answer("✅ تمدید شد")
+        if uid not in G["ACTIVE_BOTS"]:
+            await start_self_session(uid)
+        await edit(chat_id, cb.message.id, manage_text(uid), manage_markup(uid))
+    finally:
+        cb.stop_propagation()
+
+
+# ================================================================= account / info
+async def cmd_account(client, message):
+    user = message.from_user
+    uid = user.id
+    touch(user)
+    ud = G["data_manager"].data.get("users", {}).get(str(uid), {})
+    phone = str(ud.get("phone") or "")
+    phone_txt = ("•••• " + phone[-4:]) if len(phone) >= 4 else "ثبت نشده"
+    st, _, _ = self_state(uid)
+    rank = eco().rank(uid)
+    cap = (title("حساب کاربری", "👤") + "\n\n"
+           + kv("نام", esc(user_name(user))) + "\n"
+           + kv("شناسه", f"<code>{uid}</code>") + "\n"
+           + kv("شماره", phone_txt) + "\n"
+           + kv("وضعیت سلف", st) + "\n"
+           + kv("اشتراک", fmt_days(uid)) + "\n"
+           + kv("الماس", f"{fa(eco().balance(uid))} 💎") + "\n"
+           + kv("رتبه", f"#{fa(rank)}" if rank else "—"))
+    photo = None
+    try:
+        entry = G["ACTIVE_BOTS"].get(uid)
+        data = await G["_card_for_user"](uid, [G["manager_bot"], entry[0] if entry else None])
+        if data:
+            photo = io.BytesIO(data)
+    except Exception as e:
+        log.warning("account card: %s", e)
+    fn = lambda s=True: mk([[B("💎 موجودی", "primary", callback_data="bal:me"),
+                              B("🏆 برترین‌ها", "success", callback_data="top:me")]], s)
+    await send(message.chat.id, cap, fn, photo=photo)
+
+
+async def cmd_about(client, message):
+    await send(message.chat.id, ABOUT_HTML, lambda s=True: mk([[B("⚙️ شروع و فعال‌سازی", "primary", callback_data="rv:act")]], s))
+
+
+async def cmd_help(client, message):
+    txt = (title("پشتیبانی و راهنما", "📨") + "\n\n"
+           "راهنما همه‌ی دستورها را دسته‌بندی‌شده نشان می‌دهد. اگر مشکلی داشتی یا سؤالی، مستقیم به پشتیبانی پیام بده.")
+    await send(message.chat.id, txt, lambda s=True: mk([[B("📖 راهنما", "primary", switch_inline_query_current_chat="help"),
+                                                         B("💬 پشتیبانی", "success", url=SUPPORT_URL)]], s))
+
+
+async def cmd_mini(client, message):
+    url = ""
+    try:
+        url = G["_miniapp_public_url"]() or ""
+    except Exception:
+        pass
+    if not url.startswith("https://"):
+        return await send(message.chat.id, "مینی‌اپ فعلاً در دسترس نیست.")
+    await send(message.chat.id, title("مینی‌اپ", "☑️") + "\n\nپنل کامل سلف، الماس و برترین‌ها در یک محیط شیشه‌ای.",
+               lambda s=True: mk([[B("🚀 باز کردن مینی‌اپ", "success", web_app={"url": url})]], s))
+
+
+# ====================================================================== balance
+def balance_caption(user_id, name, bal) -> str:
+    return (title("موجودی", "💎") + "\n\n"
+            + kv("الماس", f"<b>{fa(bal)}</b> 💎") + "\n"
+            + kv("معادل", f"{fa(E.Economy.toman(bal))} تومان") + "\n"
+            + kv("اشتراک", fmt_days(user_id)) + "\n"
+            + kv("رتبه", f"#{fa(eco().rank(user_id) or 0)}" if eco().rank(user_id) else "—"))
+
+
+async def build_balance_photo(user_id, username):
+    import rival_cards
+    bal = eco().balance(user_id)
+    days = None if is_admin(user_id) else eco().days_left(user_id)
+    return await asyncio.to_thread(rival_cards.balance_card, username, bal, E.Economy.toman(bal), days)
+
+
+_CD: dict = {}
+
+
+def cooldown(key, secs=6.0) -> bool:
+    now = time.time()
+    if now - _CD.get(key, 0) < secs:
+        return False
+    _CD[key] = now
+    return True
+
+
+async def cmd_balance(client, message):
+    u = message.from_user
+    if not u:
+        return
+    if message.chat.type.name != "PRIVATE" and not cooldown(("bal", message.chat.id, u.id)):
+        return
+    touch(u)
+    bal = eco().balance(u.id)
+    try:
+        photo = await build_balance_photo(u.id, u.username)
+    except Exception as e:
+        log.warning("balance card: %s", e)
+        photo = None
+    fn = lambda s=True: mk([[B("🛒 خرید الماس", "primary", callback_data="bg:menu"),
+                              B("💎 رایگان", "success", callback_data="rf:open")]], s) \
+        if message.chat.type.name == "PRIVATE" else None
+    await send(message.chat.id, balance_caption(u.id, user_name(u), bal), fn, photo=photo,
+               reply_to=message.id if message.chat.type.name != "PRIVATE" else None)
+
+
+MEDALS = ["🥇", "🥈", "🥉"]
+
+
+def top_text(uid) -> str:
+    e = eco()
+    rows = e.top(10)
+    lines = [title("برترین‌ها", "🏆"), ""]
+    if not rows:
+        lines.append("هنوز کسی الماس ندارد.")
+    for i, r in enumerate(rows):
+        medal = MEDALS[i] if i < 3 else f"{fa(i + 1)}."
+        nm = r.get("name") or (("@" + r["username"]) if r.get("username") else str(r["uid"]))
+        me = " ⟵ تو" if r["uid"] == uid else ""
+        lines.append(f"{medal} {mention(r['uid'], nm)} ⟢ <b>{fa(r['balance'])}</b> 💎{me}")
+    rank = e.rank(uid)
+    if rank and rank > 10:
+        lines += ["", f"جایگاه تو: <b>#{fa(rank)}</b> ⟢ {fa(e.balance(uid))} 💎"]
+    elif not rank:
+        lines += ["", "هنوز در جدول نیستی؛ الماس بگیر و بالا بیا."]
+    return "\n".join(lines)
+
+
+async def cmd_top(client, message):
+    u = message.from_user
+    if not u:
+        return
+    if message.chat.type.name != "PRIVATE" and not cooldown(("top", message.chat.id), 10):
+        return
+    touch(u)
+    await send(message.chat.id, top_text(u.id), reply_to=message.id if message.chat.type.name != "PRIVATE" else None)
+
+
+async def cb_bal_top(client, cb):
+    u = cb.from_user
+    try:
+        await cb.answer()
+        chat_id = cb.message.chat.id if cb.message else u.id
+        if cb.data.startswith("bal:"):
+            m = type("M", (), {"from_user": u, "chat": cb.message.chat, "id": cb.message.id})()
+            await cmd_balance(client, m)
+        else:
+            await send(chat_id, top_text(u.id))
+    finally:
+        cb.stop_propagation()
+
+
+# ======================================================================= shop
+PRESETS = [500, 1000, 5000, 10000]
+
+
+def shop_text() -> str:
+    return (title("خرید الماس", "🛒") + "\n\n"
+            + kv("نرخ", f"هر ۵۰۰ 💎 = {fa(500 * E.TOMAN_PER_DIAMOND)} تومان") + "\n"
+            + kv("حداقل", f"{fa(E.MIN_BUY)} 💎") + "\n"
+            + kv("اشتراک", f"{fa(E.DIAMONDS_PER_MONTH)} 💎 = ۳۰ روز سلف") + "\n\n"
+            "یک بسته انتخاب کن یا مقدار دلخواهت را بفرست.")
+
+
+def shop_markup(styled=True):
+    rows = [[B(f"{fa(p)} 💎 · {fa(p * E.TOMAN_PER_DIAMOND)} ت", "primary", callback_data=f"bg:n:{p}")
+             for p in PRESETS[i:i + 2]] for i in range(0, len(PRESETS), 2)]
+    rows.append([B("✍️ مقدار دلخواه", "success", callback_data="bg:custom")])
+    return mk(rows, styled)
+
+
+async def cmd_buy(client, message):
+    if not await gate(client, message):
+        return
+    touch(message.from_user)
+    await send(message.chat.id, shop_text(), shop_markup)
+
+
+def pay_info() -> str:
+    card = eco().get_setting("pay_card", "")
+    return card or "<i>روش پرداخت هنوز توسط ادمین تنظیم نشده؛ از پشتیبانی بپرس.</i>"
+
+
+def invoice_text(inv) -> str:
+    left = max(0, int((inv["expires_at"] - time.time()) // 60))
+    return (title(f"فاکتور #{fa(inv['id'])}", "🧾") + "\n\n"
+            + kv("مقدار", f"{fa(inv['diamonds'])} 💎") + "\n"
+            + kv("مبلغ", f"<b>{fa(inv['toman'])}</b> تومان") + "\n"
+            + kv("اعتبار", f"{fa(left)} دقیقه") + "\n\n"
+            + "<b>پرداخت</b>\n" + pay_info() + "\n\n"
+            "بعد از پرداخت، <b>عکس رسید</b> را همین‌جا بفرست تا ادمین بررسی و الماس را اضافه کند.")
+
+
+async def make_invoice(chat_id, uid, amount):
+    try:
+        inv = eco().create_invoice(uid, amount)
+    except E.EconomyError as e:
+        if e.code == "min_buy":
+            return await send(chat_id, f"حداقل خرید {fa(E.MIN_BUY)} الماس است.")
+        if e.code == "open_invoice":
+            inv = eco().get_invoice(int(str(e)))
+            return await send(chat_id, "یک فاکتور باز داری:\n\n" + invoice_text(inv),
+                              lambda s=True: mk([[B("❌ لغو فاکتور", "danger", callback_data=f"bg:x:{inv['id']}")]], s))
+        return await send(chat_id, "خطا در ساخت فاکتور.")
+    await send(chat_id, invoice_text(inv),
+               lambda s=True: mk([[B("❌ لغو فاکتور", "danger", callback_data=f"bg:x:{inv['id']}")]], s))
+
+
+STATE: dict = {}
+
+
+async def cb_shop(client, cb):
+    uid = cb.from_user.id
+    chat_id = cb.message.chat.id if cb.message else uid
+    parts = cb.data.split(":")
+    try:
+        if not is_admin(uid) and not await gate(client, cb):
+            return await cb.answer()
+        touch(cb.from_user)
+        if parts[1] == "menu":
+            await cb.answer()
+            await send(chat_id, shop_text(), shop_markup)
+        elif parts[1] == "n":
+            await cb.answer()
+            await make_invoice(chat_id, uid, int(parts[2]))
+        elif parts[1] == "custom":
+            await cb.answer()
+            STATE[uid] = {"k": "amount", "ts": time.time()}
+            await send(chat_id, f"مقدار الماس را بفرست (حداقل {fa(E.MIN_BUY)}).\nبرای لغو: <code>لغو</code>")
+        elif parts[1] == "x":
+            try:
+                eco().reject_invoice(int(parts[2]), uid, "لغو توسط کاربر")
+                await cb.answer("فاکتور لغو شد")
+                await edit(chat_id, cb.message.id, "❌ فاکتور لغو شد.")
+            except E.EconomyError:
+                await cb.answer("این فاکتور قبلاً بسته شده.", show_alert=True)
+    finally:
+        cb.stop_propagation()
+
+
+async def on_receipt(client, message):
+    """Photo/document from a user with an open invoice -> forward to admins."""
+    u = message.from_user
+    if not u or is_admin(u.id) or u.id in G["LOGIN_STATES"]:
+        return
+    inv = eco().open_invoice_of(u.id)
+    if not inv:
+        return
+    media = message.photo or message.document
+    fuid = getattr(media, "file_unique_id", None)
+    if not fuid:
+        return
+    try:
+        inv = eco().attach_receipt(inv["id"], u.id, fuid, str(message.id))
+    except E.EconomyError as e:
+        txt = {"receipt_reused": "این رسید قبلاً استفاده شده است.",
+               "expired": "فاکتور منقضی شده؛ دوباره بساز."}.get(e.code, "ثبت رسید ممکن نشد.")
+        await send(message.chat.id, txt)
+        return message.stop_propagation()
+    cap = (title(f"رسید فاکتور #{fa(inv['id'])}", "🧾") + "\n\n"
+           + kv("کاربر", mention(u.id, user_name(u)) + (f" @{u.username}" if u.username else "")) + "\n"
+           + kv("آیدی", f"<code>{u.id}</code>") + "\n"
+           + kv("مقدار", f"{fa(inv['diamonds'])} 💎") + "\n"
+           + kv("مبلغ", f"{fa(inv['toman'])} تومان"))
+    fn = lambda s=True: mk([[B("✅ تأیید", "success", callback_data=f"ad:ok:{inv['id']}"),
+                              B("❌ رد", "danger", callback_data=f"ad:no:{inv['id']}")]], s)
+    for a in admins():
+        try:
+            await client.forward_messages(a, message.chat.id, message.id)
+            await send(a, cap, fn)
+        except Exception as e:
+            log.warning("receipt -> admin %s failed: %s", a, e)
+    await send(message.chat.id, "✅ رسید دریافت شد؛ بعد از تأیید ادمین، الماس به حسابت اضافه می‌شود.")
+    message.stop_propagation()
+
+
+async def cb_admin_invoice(client, cb):
+    aid = cb.from_user.id
+    try:
+        if not is_admin(aid):
+            return await cb.answer("اجازه نداری.", show_alert=True)
+        _, act, sid = cb.data.split(":")
+        inv_id = int(sid)
+        try:
+            if act == "ok":
+                inv = eco().approve_invoice(inv_id, aid)
+                await cb.answer("✅ تأیید شد")
+                await edit(cb.message.chat.id, cb.message.id,
+                           title(f"فاکتور #{fa(inv_id)} تأیید شد", "✅") + f"\n\n{fa(inv['diamonds'])} 💎 به {mention(inv['uid'])} اضافه شد.")
+                await notify(inv["uid"], title("پرداخت تأیید شد", "✅") + f"\n\n{fa(inv['diamonds'])} 💎 به حسابت اضافه شد.\n"
+                             f"موجودی: <b>{fa(eco().balance(inv['uid']))}</b> 💎")
+            else:
+                inv = eco().reject_invoice(inv_id, aid, "رد شد")
+                await cb.answer("رد شد")
+                await edit(cb.message.chat.id, cb.message.id, title(f"فاکتور #{fa(inv_id)} رد شد", "❌"))
+                await notify(inv["uid"], "❌ رسید تأیید نشد. اگر پرداخت کرده‌ای به پشتیبانی پیام بده.")
+        except E.EconomyError as e:
+            await cb.answer("این فاکتور قبلاً بررسی شده." if e.code == "closed" else "خطا", show_alert=True)
+    finally:
+        cb.stop_propagation()
+
+
+# ================================================================= free diamonds
+async def cmd_free(client, message):
+    if not await gate(client, message):
+        return
+    await send_referral(message.chat.id, message.from_user)
+
+
+async def send_referral(chat_id, user):
+    touch(user)
+    uname = G.get("BOT_USERNAME") or ""
+    link = f"https://t.me/{uname}?start=ref_{user.id}"
+    st = eco().ref_stats(user.id)
+    cap = (title("الماس رایگان", "🎁") + "\n\n"
+           f"دوستانت را با لینک اختصاصی دعوت کن:\n\n"
+           f"◈ ورود دوست و عضویت در کانال/گپ ⟢ <b>{fa(E.REF_INVITER_JOIN)} 💎</b> برای تو، "
+           f"<b>{fa(E.REF_INVITEE_JOIN)} 💎</b> برای او\n"
+           f"◈ فعال ماندن سلف او تا {fa(E.REF_ACTIVE_DAYS)} روز ⟢ <b>{fa(E.REF_INVITER_ACTIVE)} 💎</b> دیگر برای تو\n\n"
+           f"🔗 لینک تو:\n<code>{link}</code>\n\n"
+           f"دعوت‌ها: {fa(st['total'])} · وارد شده: {fa(st['joined'])} · سلف‌فعال: {fa(st['active'])} · درآمد: {fa(st['earned'])} 💎")
+    share = "https://t.me/share/url?url=" + link + "&text=" + "سلف%20ریوال؛%20دستیار%20هوشمند%20تلگرام%20با%20الماس%20رایگان"
+    await send(chat_id, cap, lambda s=True: mk([[B("📤 اشتراک‌گذاری لینک", "primary", url=share)]], s), photo="referral")
+
+
+async def cb_referral(client, cb):
+    try:
+        await cb.answer()
+        if await gate(client, cb):
+            await send_referral(cb.message.chat.id if cb.message else cb.from_user.id, cb.from_user)
+    finally:
+        cb.stop_propagation()
+
+
+async def on_start_ref(client, message):
+    """Record /start ref_<id> (does not stop propagation: the normal /start flow continues)."""
+    u = message.from_user
+    if not u or getattr(u, "is_bot", False):
+        return
+    touch(u)
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].startswith("ref_"):
+        return
+    inv = to_int(parts[1][4:])
+    if not inv or is_admin(u.id):
+        return
+    if str(u.id) in G["data_manager"].data.get("users", {}):
+        return  # not a new user
+    try:
+        if eco().ref_register(u.id, inv):
+            asyncio.create_task(try_confirm_ref(u.id))
+    except Exception as e:
+        log.warning("ref register: %s", e)
+
+
+async def try_confirm_ref(uid):
+    try:
+        if await joined_all(uid) is not True:
+            return
+        res = eco().ref_confirm_join(uid)
+    except E.EconomyError:
+        return
+    except Exception as e:
+        log.warning("ref confirm: %s", e)
+        return
+    if res:
+        await notify(res["inviter"], title("دعوت موفق", "🎉") + f"\n\nیک نفر با لینکت وارد شد.\n+{fa(res['inviter_gain'])} 💎\n"
+                     f"اگر سلفش را {fa(E.REF_ACTIVE_DAYS)} روز فعال نگه دارد، {fa(E.REF_INVITER_ACTIVE)} 💎 دیگر می‌گیری.")
+        await notify(uid, title("هدیه‌ی خوش‌آمد", "🎁") + f"\n\n+{fa(res['invitee_gain'])} 💎 به حسابت اضافه شد.")
+
+
+async def cb_joined(client, cb):
+    uid = cb.from_user.id
+    try:
+        ok = await joined_all(uid)
+        if ok is False:
+            return await cb.answer("هنوز در همه‌ی کانال‌ها/گپ‌ها عضو نشدی.", show_alert=True)
+        await cb.answer("✅ عضویت تأیید شد")
+        try:
+            await cb.message.delete()
+        except Exception:
+            pass
+        await try_confirm_ref(uid)
+        await G["send_main_menu"](cb.message.chat.id if cb.message else uid)
+    finally:
+        cb.stop_propagation()
+
+
+# ===================================================================== games
+def official_chat():
+    return eco().get_setting("official_chat")
+
+
+def _name_of(uid):
+    with eco()._lock:
+        r = eco()._c.execute("SELECT name,username FROM wallets WHERE uid=?", (uid,)).fetchone()
+    return (r["name"] or ("@" + r["username"] if r["username"] else None)) if r else None
+
+
+def pname(uid):
+    return mention(uid, _name_of(uid) or uid)
+
+
+def game_markup_open(gid):
+    return lambda s=True: mk([[B("🎲 پیوستن", "success", callback_data=f"gm:j:{gid}"),
+                                B("🚫 لغو", "danger", callback_data=f"gm:c:{gid}")]], s)
+
+
+async def new_game(client, message, kind, stake):
+    u = message.from_user
+    if not u or getattr(u, "is_bot", False):
+        return
+    chat = message.chat
+    off = official_chat()
+    if not off:
+        if cooldown(("noff", chat.id), 30):
+            await send(chat.id, "گپ رسمی هنوز تنظیم نشده است.", reply_to=message.id)
+        return
+    if chat.id != off:
+        if cooldown(("woff", chat.id), 30):
+            await send(chat.id, "🎮 بازی‌ها فقط در گپ رسمی ممکن است.", reply_to=message.id)
+        return
+    touch(u)
+    if not cooldown(("newgame", u.id), 3):
+        return
+    try:
+        g = eco().game_create(kind, chat.id, u.id, stake)
+    except E.EconomyError as e:
+        msg = {"stake_min": f"حداقل شرط {fa(E.BET_MIN)} الماس است.",
+               "stake_max": f"حداکثر شرط {fa(E.BET_MAX)} الماس است.",
+               "insufficient": "الماس کافی نداری. در پیوی ربات «الماس رایگان» یا «خرید الماس» را بزن."}.get(e.code, "خطا")
+        return await send(chat.id, msg, reply_to=message.id)
+    if kind == "bet":
+        cap = (title("بازی شرطی", "🎲") + "\n\n"
+               + kv("سازنده", mention(u.id, user_name(u))) + "\n"
+               + kv("شرط هر نفر", f"<b>{fa(stake)}</b> 💎") + "\n"
+               + kv("مالیات", f"{fa(E.TAX_PERCENT)}٪ از سود برنده") + "\n\n"
+               "اولین نفری که «پیوستن» را بزند، برنده با قرعه‌ی تصادفی مشخص می‌شود.")
+        res = await send(chat.id, cap, game_markup_open(g["id"]), photo="bet")
+    else:
+        cap = (title("دوز", "⭕") + "\n\n"
+               + kv("سازنده", mention(u.id, user_name(u))) + " (شروع‌کننده، ❌)\n"
+               + kv("شرط هر نفر", f"<b>{fa(stake)}</b> 💎") + "\n"
+               + kv("مالیات", f"{fa(E.TAX_PERCENT)}٪ از سود برنده") + "\n\n"
+               "حریف با «پیوستن» وارد می‌شود. اولین نفری که یک خط کامل کند، برنده است.")
+        res = await send(chat.id, cap, game_markup_open(g["id"]), photo="dooz")
+    if res:
+        eco().game_set_msg(g["id"], res["message_id"])
+    else:
+        eco().game_cancel(g["id"], force=True)
+
+
+def ttt_markup(gid, board, over=False):
+    def fn(styled=True):
+        rows = []
+        for r in range(3):
+            row = []
+            for c in range(3):
+                v = board[r * 3 + c]
+                label = {"X": "❌", "O": "⭕"}.get(v, "▫️")
+                style = {"X": "danger", "O": "primary"}.get(v)
+                row.append(B(label, style, callback_data=("gm:z" if over else f"gm:m:{gid}:{r * 3 + c}")))
+            rows.append(row)
+        return mk(rows, styled)
+    return fn
+
+
+def ttt_caption(g, st, note=""):
+    turn_uid = st["x"] if st["turn"] == "X" else st["o"]
+    cap = (title("دوز", "⭕") + "\n\n"
+           + kv("❌", pname(st["x"])) + "\n" + kv("⭕", pname(st["o"])) + "\n"
+           + kv("شرط", f"{fa(g['stake'])} 💎 هر نفر") + "\n")
+    if note:
+        cap += "\n" + note
+    else:
+        cap += "\n" + f"نوبت: {pname(turn_uid)} ({'❌' if st['turn'] == 'X' else '⭕'})"
+    return cap
+
+
+def _st(g):
+    try:
+        return json.loads(g["state"]) if g.get("state") else None
+    except Exception:
+        return None
+
+
+async def finish_game(g, winner, note_extra=""):
+    """Settle money first, then update the message. Returns the finished row."""
+    done = eco().game_finish(g["id"], winner)
+    return done
+
+
+async def cb_game(client, cb):
+    u = cb.from_user
+    parts = cb.data.split(":")
+    chat_id = cb.message.chat.id if cb.message else None
+    mid = cb.message.id if cb.message else None
+    try:
+        if parts[1] == "z":
+            return await cb.answer()
+        gid = int(parts[2])
+        g = eco().game_get(gid)
+        if not g:
+            return await cb.answer("بازی پیدا نشد.", show_alert=True)
+        touch(u)
+        if parts[1] == "c":
+            if u.id != g["creator"] and not is_admin(u.id):
+                return await cb.answer("فقط سازنده می‌تواند لغو کند.", show_alert=True)
+            try:
+                eco().game_cancel(gid, force=is_admin(u.id))
+            except E.EconomyError:
+                return await cb.answer("بازی دیگر قابل لغو نیست.", show_alert=True)
+            await cb.answer("لغو شد و شرط برگشت.")
+            return await edit(chat_id, mid, title("بازی لغو شد", "🚫") + "\n\nشرط سازنده برگشت.", None, True)
+        if parts[1] == "j":
+            try:
+                g = eco().game_join(gid, u.id)
+            except E.EconomyError as e:
+                return await cb.answer({"insufficient": "الماس کافی نداری.", "self_join": "با خودت نمی‌شود بازی کرد.",
+                                        "not_open": "این بازی دیگر باز نیست.", "expired": "بازی منقضی شد."}.get(e.code, "خطا"),
+                                       show_alert=True)
+            await cb.answer("پیوستی! 🎲")
+            if g["kind"] == "bet":
+                await edit(chat_id, mid, title("بازی شرطی", "🎲") + "\n\n"
+                           f"{pname(g['creator'])} 🆚 {pname(g['opponent'])}\n\n⏳ قرعه‌کشی…", None, True)
+                await asyncio.sleep(2.0)
+                r = eco().game_pick_winner(gid)
+                w, l = r["winner"], (r["creator"] if r["winner"] == r["opponent"] else r["opponent"])
+                cap = (title("نتیجه‌ی بازی شرطی", "🏆") + "\n\n"
+                       + kv("برنده", pname(w)) + "\n" + kv("بازنده", pname(l)) + "\n\n"
+                       + kv("جایزه", f"<b>{fa(r['payout'])}</b> 💎") + "\n"
+                       + kv("مالیات", f"{fa(r['tax'])} 💎"))
+                await edit(chat_id, mid, cap, None, True)
+            else:
+                st = {"board": [""] * 9, "turn": "X", "x": g["creator"], "o": g["opponent"], "ts": time.time()}
+                eco().game_state(gid, st)
+                await edit(chat_id, mid, ttt_caption(g, st), ttt_markup(gid, st["board"]), True)
+            return
+        if parts[1] == "m":
+            async with _GL.setdefault(gid, asyncio.Lock()):
+                return await _ttt_move(cb, gid, int(parts[3]), chat_id, mid)
+    except Exception as e:
+        log.exception("game callback: %s", e)
+        try:
+            await cb.answer("خطای موقت؛ دوباره امتحان کن.", show_alert=True)
+        except Exception:
+            pass
+    finally:
+        cb.stop_propagation()
+
+
+_GL: dict = {}
+
+
+async def _ttt_move(cb, gid, idx, chat_id, mid):
+    u = cb.from_user
+    g = eco().game_get(gid)
+    if True:
+        if True:
+            st = _st(g)
+            if g["status"] != "running" or not st:
+                return await cb.answer("بازی تمام شده.", show_alert=True)
+            cur = st["x"] if st["turn"] == "X" else st["o"]
+            if u.id not in (st["x"], st["o"]):
+                return await cb.answer("بازیکن نیستی.", show_alert=True)
+            if u.id != cur:
+                return await cb.answer("نوبت تو نیست.", show_alert=True)
+            if st["board"][idx]:
+                return await cb.answer("این خانه پر است.", show_alert=True)
+            st["board"][idx] = st["turn"]
+            res = E.ttt_winner(st["board"])
+            if res is None:
+                st["turn"] = "O" if st["turn"] == "X" else "X"
+                st["ts"] = time.time()
+                eco().game_state(gid, st)
+                await cb.answer()
+                return await edit(chat_id, mid, ttt_caption(g, st), ttt_markup(gid, st["board"]), True)
+            if res == "draw":
+                eco().game_finish(gid, None)
+                note = "🤝 مساوی؛ شرط هر دو برگشت."
+            else:
+                winner = st["x"] if res == "X" else st["o"]
+                r = eco().game_finish(gid, winner)
+                note = (f"🏆 برنده: {pname(winner)}\n" + kv("جایزه", f"<b>{fa(r['payout'])}</b> 💎") + "\n"
+                        + kv("مالیات", f"{fa(r['tax'])} 💎"))
+            eco().game_state(gid, st)
+            await cb.answer()
+            await edit(chat_id, mid, ttt_caption(g, st, note), ttt_markup(gid, st["board"], True), True)
+
+
+async def games_tick():
+    """Expire open games, forfeit stalled tic-tac-toe moves."""
+    e = eco()
+    for gid in e.games_expired():
+        try:
+            g = e.game_cancel(gid, force=True)
+            if g.get("msg_id"):
+                await edit(g["chat_id"], g["msg_id"], title("بازی منقضی شد", "⌛") + "\n\nشرط برگشت.", None, True)
+        except Exception:
+            pass
+    with e._lock:
+        rows = e._c.execute("SELECT * FROM games WHERE status='running' AND kind='ttt'").fetchall()
+    for r in rows:
+        g = dict(r)
+        st = _st(g)
+        if not st or time.time() - st.get("ts", time.time()) < 120:
+            continue
+        loser = st["x"] if st["turn"] == "X" else st["o"]
+        winner = st["o"] if loser == st["x"] else st["x"]
+        try:
+            res = e.game_finish(g["id"], winner)
+            note = f"⌛ {pname(loser)} در مهلت حرکت نکرد.\n🏆 برنده: {pname(winner)}\n" + kv("جایزه", f"<b>{fa(res['payout'])}</b> 💎")
+            if g.get("msg_id"):
+                await edit(g["chat_id"], g["msg_id"], ttt_caption(g, st, note), ttt_markup(g["id"], st["board"], True), True)
+        except Exception:
+            pass
+
+
+# ================================================================ admin tools
+def eco_admin_text() -> str:
+    e = eco()
+    a = e.audit()
+    with e._lock:
+        users = e._c.execute("SELECT COUNT(*) n FROM wallets WHERE uid>0").fetchone()["n"]
+        pend = e._c.execute("SELECT COUNT(*) n FROM invoices WHERE status IN('pending','receipt')").fetchone()["n"]
+        subs = e._c.execute("SELECT COUNT(*) n FROM subs WHERE expires_at>?", (int(time.time()),)).fetchone()["n"]
+    off = official_chat()
+    return (title("اقتصاد · ادمین", "💎") + "\n\n"
+            + kv("کیف‌پول‌ها", fa(users)) + "\n"
+            + kv("مجموع الماس", f"{fa(a['wallets'])} 💎 {'✅' if a['ok'] else '⚠️ ناهمخوان'}") + "\n"
+            + kv("اشتراک فعال", fa(subs)) + "\n"
+            + kv("فاکتور باز", fa(pend)) + "\n"
+            + kv("گپ رسمی", f"<code>{off}</code>" if off else "تنظیم نشده") + "\n"
+            + kv("هدیه‌ی شروع", f"{fa(e.get_setting('trial_days', 5))} روز") + "\n\n"
+            "دستورها:\n<code>/addgems آیدی تعداد</code>\n<code>/adddays آیدی روز</code>\n"
+            "<code>/settrial روز</code>\n<code>/setcard متن</code>\n"
+            "<code>/setofficial</code> (داخل گپ رسمی)\n<code>/unsetofficial</code>")
+
+
+def eco_admin_markup(styled=True):
+    return mk([[B("🧾 فاکتورهای باز", "primary", callback_data="ad:pend"),
+                B("💳 تنظیم پرداخت", "success", callback_data="ad:card")],
+               [B("➕ شارژ دستی", "success", callback_data="ad:add"),
+                B("📅 افزودن روز", "success", callback_data="ad:days")],
+               [B("📊 بروزرسانی", "primary", callback_data="ad:stats")]], styled)
+
+
+async def cmd_eco_admin(client, message):
+    if not is_admin(message.from_user.id):
+        return
+    await send(message.chat.id, eco_admin_text(), eco_admin_markup)
+
+
+async def cb_admin(client, cb):
+    aid = cb.from_user.id
+    chat_id = cb.message.chat.id if cb.message else aid
+    act = cb.data.split(":")[1]
+    try:
+        if not is_admin(aid):
+            return await cb.answer("اجازه نداری.", show_alert=True)
+        await cb.answer()
+        if act == "stats":
+            await edit(chat_id, cb.message.id, eco_admin_text(), eco_admin_markup)
+        elif act == "card":
+            STATE[aid] = {"k": "card", "ts": time.time()}
+            await send(chat_id, "متن پرداخت را بفرست (شماره کارت، نام صاحب حساب، …). HTML ساده مجاز است.\nلغو: <code>لغو</code>")
+        elif act == "add":
+            STATE[aid] = {"k": "addgems", "ts": time.time()}
+            await send(chat_id, "بفرست: <code>آیدی تعداد</code>  مثل <code>123456 500</code>")
+        elif act == "days":
+            STATE[aid] = {"k": "adddays", "ts": time.time()}
+            await send(chat_id, "بفرست: <code>آیدی روز</code>  مثل <code>123456 30</code>")
+        elif act == "pend":
+            with eco()._lock:
+                rows = eco()._c.execute("SELECT * FROM invoices WHERE status IN('pending','receipt') ORDER BY id DESC LIMIT 10").fetchall()
+            if not rows:
+                return await send(chat_id, "فاکتور بازی نیست.")
+            for r in rows:
+                fn = lambda s=True, i=r["id"]: mk([[B("✅ تأیید", "success", callback_data=f"ad:ok:{i}"),
+                                                    B("❌ رد", "danger", callback_data=f"ad:no:{i}")]], s)
+                await send(chat_id, title(f"فاکتور #{fa(r['id'])}", "🧾") + f"\n\n{mention(r['uid'])} · {fa(r['diamonds'])} 💎 · "
+                           f"{fa(r['toman'])} ت · {'رسید دارد' if r['status'] == 'receipt' else 'بدون رسید'}", fn)
+    finally:
+        cb.stop_propagation()
+
+
+async def admin_commands(client, message):
+    u = message.from_user
+    if not u or not is_admin(u.id):
+        return
+    cmd = message.command[0].lower()
+    args = message.command[1:]
+    chat = message.chat
+    e = eco()
+    try:
+        if cmd == "addgems":
+            uid, n = int(args[0]), int(args[1])
+            if n >= 0:
+                e.credit(uid, n, "admin_add", f"a{int(time.time() * 1000)}")
+            else:
+                e.debit(uid, -n, "admin_sub", f"a{int(time.time() * 1000)}")
+            await send(chat.id, f"✅ موجودی {uid}: {fa(e.balance(uid))} 💎")
+            if n > 0:
+                await notify(uid, f"🎁 {fa(n)} 💎 توسط مدیریت به حسابت اضافه شد.")
+        elif cmd == "adddays":
+            uid, n = int(args[0]), int(args[1])
+            e.add_days(uid, n)
+            await send(chat.id, f"✅ {fa(n)} روز به {uid} اضافه شد ({fmt_days(uid)}).")
+            if uid not in G["ACTIVE_BOTS"]:
+                await start_self_session(uid)
+        elif cmd == "settrial":
+            e.set_setting("trial_days", int(args[0]))
+            await send(chat.id, f"✅ هدیه‌ی شروع: {fa(int(args[0]))} روز")
+        elif cmd == "setcard":
+            e.set_setting("pay_card", message.text.split(maxsplit=1)[1])
+            await send(chat.id, "✅ اطلاعات پرداخت ذخیره شد.")
+        elif cmd == "setofficial":
+            if chat.type.name == "PRIVATE":
+                return await send(chat.id, "این دستور را داخل گپ رسمی بزن.")
+            e.set_setting("official_chat", chat.id)
+            await send(chat.id, "✅ این گپ به‌عنوان گپ رسمی ثبت شد؛ بازی‌ها فقط اینجا فعال‌اند.")
+        elif cmd == "unsetofficial":
+            e.set_setting("official_chat", None)
+            await send(chat.id, "گپ رسمی برداشته شد.")
+        elif cmd == "economy":
+            await send(chat.id, eco_admin_text(), eco_admin_markup)
+    except (IndexError, ValueError):
+        await send(chat.id, "قالب دستور درست نیست.")
+    except E.EconomyError as ex:
+        await send(chat.id, f"خطا: {ex.code}")
+
+
+async def on_state_text(client, message):
+    """Free-text input steps (custom amount, admin forms)."""
+    u = message.from_user
+    if not u or u.id not in STATE or u.id in G["LOGIN_STATES"]:
+        return
+    st = STATE[u.id]
+    if time.time() - st["ts"] > 600:
+        STATE.pop(u.id, None)
+        return
+    text = (message.text or "").strip()
+    if text in ("لغو", "/cancel"):
+        STATE.pop(u.id, None)
+        await send(message.chat.id, "لغو شد.")
+        return message.stop_propagation()
+    k = st["k"]
+    try:
+        if k == "amount":
+            n = to_int(text)
+            if not n:
+                await send(message.chat.id, "یک عدد بفرست.")
+                return message.stop_propagation()
+            STATE.pop(u.id, None)
+            await make_invoice(message.chat.id, u.id, n)
+        elif not is_admin(u.id):
+            STATE.pop(u.id, None)
+            return
+        elif k == "card":
+            eco().set_setting("pay_card", text)
+            STATE.pop(u.id, None)
+            await send(message.chat.id, "✅ ذخیره شد.")
+        elif k in ("addgems", "adddays"):
+            a, b = text.split()[:2]
+            uid, n = int(a), int(b)
+            STATE.pop(u.id, None)
+            if k == "addgems":
+                eco().credit(uid, n, "admin_add", f"a{int(time.time() * 1000)}")
+                await notify(uid, f"🎁 {fa(n)} 💎 توسط مدیریت به حسابت اضافه شد.")
+                await send(message.chat.id, f"✅ موجودی {uid}: {fa(eco().balance(uid))} 💎")
+            else:
+                eco().add_days(uid, n)
+                if uid not in G["ACTIVE_BOTS"]:
+                    await start_self_session(uid)
+                await send(message.chat.id, f"✅ {fa(n)} روز اضافه شد.")
+    except (ValueError, E.EconomyError):
+        await send(message.chat.id, "ورودی درست نیست؛ دوباره بفرست یا «لغو».")
+    message.stop_propagation()
+
+
+async def cmd_user_menu(client, message):
+    await G["send_main_menu"](message.chat.id)
+
+
+# ------------------------------------------------------------- backup / restore
+async def send_economy_backup(target_id):
+    try:
+        path = f"/tmp/economy_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+        e = eco()
+        with e._lock:
+            dst = sqlite3.connect(path)
+            e._c.backup(dst)
+            dst.close()
+        await G["manager_bot"].send_document(target_id, path, caption="بکاپ اقتصاد (الماس‌ها، فاکتورها، بازی‌ها)")
+        os.remove(path)
+        return True
+    except Exception as ex:
+        log.warning("economy backup failed: %s", ex)
+        return False
+
+
+async def on_restore_doc(client, message):
+    u = message.from_user
+    if not u or u.id != G["ROOT_ADMIN"] or not message.document:
+        return
+    name = (message.document.file_name or "").lower()
+    if not (name.startswith("economy") and name.endswith(".db")):
+        return
+    path = await client.download_media(message, file_name=f"/tmp/restore_{int(time.time())}.db")
+    try:
+        src = sqlite3.connect(path)
+        ok = src.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        src.execute("SELECT COUNT(*) FROM wallets")
+        if not ok:
+            raise ValueError("integrity")
+        e = eco()
+        with e._lock:
+            src.backup(e._c)
+        src.close()
+        await send(message.chat.id, "✅ دیتابیس اقتصاد بازیابی شد.")
+    except Exception as ex:
+        await send(message.chat.id, f"❌ فایل معتبر نیست: {esc(ex)}")
+    finally:
+        try:
+            os.remove(path)
+        except Exception:
+            pass
+    message.stop_propagation()
+
+
+# =========================================================== subscription hooks
+async def notify_expired(uid):
+    e = eco()
+    marker = f"expn:{uid}:{e.sub_expires(uid)}"
+    if e.get_setting(marker):
+        return
+    e.set_setting(marker, True)
+    await notify(uid, title("اشتراک تمام شده", "⌛") + "\n\nبرای روشن شدن سلف، اشتراکت را تمدید کن.",
+                 lambda s=True: mk([[B("🔁 تمدید ۳۰ روزه", "primary", callback_data="sb:buy"),
+                                     B("🛒 خرید الماس", "success", callback_data="bg:menu")]], s))
+
+
+def on_login(uid, phone=None):
+    """Called by finalize_login: trial days once, start the referral 3-day clock."""
+    e = eco()
+    try:
+        key = f"trial:{uid}"
+        if not e.get_setting(key) and not is_admin(uid):
+            days = int(e.get_setting("trial_days", 5))
+            if days > 0:
+                e.add_days(uid, days)
+            e.set_setting(key, True)
+        e.ref_mark_activated(uid, phone)
+    except Exception as ex:
+        log.warning("on_login: %s", ex)
+
+
+def migrate_existing():
+    """One-time grace for users who already had a self before the diamond system."""
+    e = eco()
+    if e.get_setting("migrated_v1"):
+        return 0
+    n = 0
+    days = int(e.get_setting("grace_days", 7))
+    for uid, ud in G["data_manager"].data.get("users", {}).items():
+        if isinstance(ud, dict) and ud.get("session_string"):
+            try:
+                e.add_days(int(uid), days)
+                e.set_setting(f"trial:{uid}", True)
+                n += 1
+            except Exception:
+                pass
+    e.set_setting("migrated_v1", True)
+    log.info("economy migration: %s users got %s grace days", n, days)
+    return n
+
+
+async def subs_tick():
+    e = eco()
+    today = datetime.now().strftime("%Y%m%d")
+    for uid in list(G["ACTIVE_BOTS"].keys()):
+        if is_admin(uid):
+            continue
+        left = e.days_left(uid)
+        if left <= 0:
+            try:
+                await G["stop_user_bot"](uid)
+            except Exception as ex:
+                log.warning("stop expired %s: %s", uid, ex)
+            marker = f"expn:{uid}:{e.sub_expires(uid)}"
+            if not e.get_setting(marker):
+                e.set_setting(marker, True)
+                await notify(uid, title("اشتراک تمام شد", "⌛") + "\n\nسلفت متوقف شد (حسابت دست‌نخورده است). "
+                             "با تمدید، همان لحظه دوباره روشن می‌شود.",
+                             lambda s=True: mk([[B("🔁 تمدید ۳۰ روزه", "primary", callback_data="sb:buy"),
+                                                 B("🛒 خرید الماس", "success", callback_data="bg:menu")]], s))
+        elif left <= 3:
+            marker = f"warn:{uid}:{today}"
+            if not e.get_setting(marker):
+                e.set_setting(marker, True)
+                await notify(uid, title("اشتراک رو به پایان است", "⏰") + f"\n\n{fa(left)} روز دیگر سلفت متوقف می‌شود.",
+                             lambda s=True: mk([[B("🔁 تمدید ۳۰ روزه", "primary", callback_data="sb:buy")]], s))
+    # referral 3-day bonus
+    paid = e.ref_pending_active(lambda uid: uid in G["ACTIVE_BOTS"])
+    for p in paid:
+        await notify(p["inviter"], title("پاداش فعال‌سازی", "🎉") + f"\n\nدوستت ۳ روز سلف را فعال نگه داشت: +{fa(p['gain'])} 💎")
+
+
+async def background():
+    t_sub = t_inv = 0.0
+    try:
+        migrate_existing()
+    except Exception as ex:
+        log.warning("migrate: %s", ex)
+    while True:
+        try:
+            await games_tick()
+            now = time.time()
+            if now - t_inv > 60:
+                t_inv = now
+                eco().expire_invoices()
+            if now - t_sub > 300:
+                t_sub = now
+                await subs_tick()
+        except asyncio.CancelledError:
+            raise
+        except Exception as ex:
+            log.warning("rival background: %s", ex)
+        await asyncio.sleep(20)
+
+
+def start_background():
+    return asyncio.create_task(background())
+
+
+# ============================================================ login code keypad
+PAD_LEN = 5
+PAD_MAX = 6
+_KEY = ["0️⃣", "1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣"]
+
+
+def pad_text(digits: str, note: str = "") -> str:
+    slots = [digits[i] if i < len(digits) else "-" for i in range(max(PAD_LEN, len(digits)))]
+    txt = (title("کد ورود", "🔐") + "\n\n"
+           "کدی که تلگرام فرستاد را با دکمه‌ها وارد کن (نه تایپ در چت؛ تایپ کد باعث باطل شدنش می‌شود).\n\n"
+           f"کد: {' '.join(slots)}")
+    if note:
+        txt += "\n\n" + note
+    return txt
+
+
+def pad_markup(styled=True):
+    def b(label, key, style):
+        return B(label, style, callback_data=f"kp:{key}")
+    rows = [[b(_KEY[0], "0", "primary"), b(_KEY[1], "1", "primary"), b(_KEY[2], "2", "primary")],
+            [b(_KEY[3], "3", "primary"), b(_KEY[4], "4", "primary"), b(_KEY[5], "5", "primary")],
+            [b(_KEY[6], "6", "primary"), b(_KEY[7], "7", "primary"), b(_KEY[8], "8", "primary")],
+            [b(_KEY[9], "9", "primary"), b("⌫ حذف کد", "del", "danger"), b("✖️ انصراف", "cancel", "danger")],
+            [b("✅ تأیید", "ok", "success")]]
+    return mk(rows, styled)
+
+
+async def send_code_pad(uid):
+    st = G["LOGIN_STATES"].get(uid)
+    if not st:
+        return None
+    res = await send(uid, pad_text(""), pad_markup)
+    if res:
+        st["pad"] = {"digits": "", "msg": res["message_id"]}
+    return res
+
+
+async def cb_pad(client, cb):
+    uid = cb.from_user.id
+    key = (cb.data or "").split(":", 1)[-1]
+    try:
+        st = G["LOGIN_STATES"].get(uid)
+        pad = st.get("pad") if st else None
+        if not st or not pad or st.get("step") != "code" or (cb.message and cb.message.id != pad["msg"]):
+            await cb.answer("این صفحه منقضی شده؛ دوباره فعال‌سازی را بزن.", show_alert=True)
+            return
+        chat_id = cb.message.chat.id
+        if key.isdigit():
+            if len(pad["digits"]) >= PAD_MAX:
+                return await cb.answer("کد کامل است.")
+            pad["digits"] += key
+            await cb.answer()
+            await edit(chat_id, pad["msg"], pad_text(pad["digits"]), pad_markup)
+        elif key == "del":
+            pad["digits"] = pad["digits"][:-1]
+            await cb.answer()
+            await edit(chat_id, pad["msg"], pad_text(pad["digits"]), pad_markup)
+        elif key == "cancel":
+            await cb.answer("لغو شد")
+            client_u = st.get("client")
+            G["LOGIN_STATES"].pop(uid, None)
+            if client_u:
+                try:
+                    await asyncio.wait_for(client_u.disconnect(), timeout=4)
+                except Exception:
+                    pass
+            await edit(chat_id, pad["msg"], title("ورود لغو شد", "✖️") + "\n\nهر وقت خواستی از «مدیریت سلف» دوباره شروع کن.")
+        elif key == "ok":
+            if len(pad["digits"]) < PAD_LEN:
+                return await cb.answer(f"کد باید {fa(PAD_LEN)} رقم باشد.", show_alert=True)
+            await cb.answer("در حال بررسی…")
+            digits = pad["digits"]
+            await edit(chat_id, pad["msg"], pad_text(digits, "⏳ در حال بررسی…"))
+            await G["text_handler"](client, G["_MenuMsg"](client, cb.from_user, uid, digits))
+            st2 = G["LOGIN_STATES"].get(uid)
+            if st2 and st2.get("step") == "code":  # wrong / expired code: let them retry
+                st2["pad"]["digits"] = ""
+                await edit(chat_id, st2["pad"]["msg"], pad_text("", "❌ کد اشتباه یا منقضی بود؛ دوباره وارد کن."), pad_markup)
+            else:
+                await edit(chat_id, pad["msg"], title("کد پذیرفته شد", "✅") + "\n\nادامه‌ی مراحل را دنبال کن.")
+    except Exception as e:
+        log.exception("code pad: %s", e)
+    finally:
+        cb.stop_propagation()
+
+
+# ================================================================== registration
+_BTN_ACTIONS = {"manage": cmd_manage, "acc": cmd_account, "about": cmd_about, "buy": cmd_buy,
+                "help": cmd_help, "free": cmd_free, "mini": cmd_mini}
+
+
+def install(g: dict):
+    """Bind bot globals and register all handlers on the manager bot."""
+    global G
+    G = g  # live reference: BOT_USERNAME etc. change at runtime
+    mb = g["manager_bot"]
+    MH, CH = g["MessageHandler"], g["CallbackQueryHandler"]
+    PRIV = filters.private
+
+    async def on_button(client, message):
+        if not message.from_user:
+            return
+        key = KEYMAP.get(norm(message.text))
+        if key:
+            try:
+                if is_admin(message.from_user.id) or key in ("about", "help") or await gate(client, message):
+                    await _BTN_ACTIONS[key](client, message)
+            except StopPropagation:
+                raise
+            except Exception as ex:
+                log.exception("button %s failed: %s", key, ex)
+        message.stop_propagation()
+
+    is_btn = filters.create(lambda _, __, m: bool(m.text) and norm(m.text) in KEYMAP)
+
+    def reg_msg(fn, flt, group):
+        mb.add_handler(MH(fn, flt), group=group)
+
+    def reg_cb(fn, pattern, group=-13):
+        mb.add_handler(CH(fn, filters.regex(pattern)), group=group)
+
+    reg_msg(on_start_ref, PRIV & filters.command("start"), -16)
+    reg_msg(on_button, PRIV & is_btn, -13)
+    reg_msg(cmd_eco_admin, PRIV & filters.regex(r"^💎 اقتصاد$"), -13)
+    reg_msg(cmd_user_menu, PRIV & filters.regex(r"^🔙 منوی کاربری$"), -13)
+    reg_msg(admin_commands, filters.command(["addgems", "adddays", "settrial", "setcard", "setofficial",
+                                             "unsetofficial", "economy"]), -13)
+    reg_msg(on_restore_doc, PRIV & filters.document, -13)
+    reg_msg(on_state_text, PRIV & filters.text, -12)
+    reg_msg(on_receipt, PRIV & (filters.photo | filters.document), -12)
+
+    bal_re = r"^(?:/balance(?:@\w+)?|/موجودی|موجودی|\.موجودی)$"
+    top_re = r"^(?:/top(?:@\w+)?|/برترین‌ها|برترین‌ها|برترین ها|برترینها)$"
+    reg_msg(cmd_balance, filters.text & filters.regex(bal_re), -14)
+    reg_msg(cmd_top, filters.text & filters.regex(top_re), -14)
+
+    stake_re = r"^([0-9۰-۹٠-٩,٬]+)$"
+
+    async def bet_cmd(client, message):
+        n = to_int(message.matches[0].group(1))
+        if n:
+            await new_game(client, message, "bet", n)
+
+    async def dooz_cmd(client, message):
+        n = to_int(message.matches[0].group(1))
+        if n:
+            await new_game(client, message, "ttt", n)
+
+    reg_msg(bet_cmd, filters.group & filters.text & filters.regex(r"^(?:/bet(?:@\w+)?|بازی)\s+([0-9۰-۹٠-٩,٬]+)$"), -14)
+    reg_msg(dooz_cmd, filters.group & filters.text & filters.regex(r"^(?:/dooz(?:@\w+)?|دوز)\s+([0-9۰-۹٠-٩,٬]+)$"), -14)
+
+    reg_cb(cb_self, r"^rv:")
+    reg_cb(cb_sub, r"^sb:")
+    reg_cb(cb_shop, r"^bg:")
+    reg_cb(cb_admin_invoice, r"^ad:(ok|no):")
+    reg_cb(cb_admin, r"^ad:")
+    reg_cb(cb_referral, r"^rf:")
+    reg_cb(cb_bal_top, r"^(bal|top):")
+    reg_cb(cb_game, r"^gm:")
+    reg_cb(cb_joined, r"^chk_manager_join_")
+    reg_cb(cb_pad, r"^kp:")
+    log.info("rival_core installed")

@@ -1,0 +1,17 @@
+pyrogram
+tgcrypto
+aiohttp
+Pillow
+yt-dlp
+jdatetime
+arabic-reshaper
+python-bidi
+uvloop
+psutil
+requests
+qrcode[pil]
+pyfiglet
+gtts
+pytesseract
+deep-translator
+tzdata
