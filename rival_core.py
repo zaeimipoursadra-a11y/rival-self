@@ -292,6 +292,42 @@ async def notify(uid, text, markup_fn=None):
 
 
 # -------------------------------------------------------------- forced join gate
+_CHAT_INFO: dict = {}
+
+
+async def chat_info(chat):
+    """(title, url) of a forced-join chat; cached 10 min, falls back to a generic label."""
+    hit = _CHAT_INFO.get(str(chat))
+    if hit and time.time() - hit[0] < 600:
+        return hit[1], hit[2]
+    title_, url = None, None
+    try:
+        c = await G["manager_bot"].get_chat(chat)
+        title_ = c.title or c.first_name
+        if getattr(c, "username", None):
+            url = f"https://t.me/{c.username}"
+        elif getattr(c, "invite_link", None):
+            url = c.invite_link
+    except Exception:
+        pass
+    if not url:
+        url = (f"https://t.me/{str(chat).lstrip('@')}" if isinstance(chat, str) and str(chat).startswith("@")
+               else f"https://t.me/c/{str(chat).replace('-100', '')}/1")
+    title_ = title_ or (str(chat) if isinstance(chat, str) else "کانال / گروه")
+    _CHAT_INFO[str(chat)] = (time.time(), title_, url)
+    return title_, url
+
+
+async def fjoin_prompt(chat_id, uid, chats):
+    infos = [await chat_info(c) for c in chats]
+    text = ("برای استفاده از سلف ؛\n"
+            "☑️ ابتدا باید در کانال یا گروه زیر عضو شوید\n\n"
+            "☑️ پس از عضویت روی دکمه عضو شدم بزنید تا ربات فعال شه")
+    rows = [[B(t[:60], "primary", url=u)] for t, u in infos]
+    rows.append([B("عــضــو شــدم ✅", "success", callback_data=f"chk_manager_join_{uid}")])
+    await send(chat_id, text, lambda s=True: mk(rows, s))
+
+
 async def joined_all(uid):
     """None = forced join not configured, True/False otherwise."""
     dm = G["data_manager"]
@@ -845,6 +881,9 @@ async def on_start_ref(client, message):
         return
     touch(u, True)
     parts = (message.text or "").split(maxsplit=1)
+    if len(parts) == 2 and parts[1].strip() == "mini":
+        await cmd_mini(client, message)
+        return
     if len(parts) == 2 and parts[1].strip() == "gift":
         if await joined_all(u.id) is not False:
             STATE[u.id] = {"k": "gift", "ts": time.time()}
@@ -969,6 +1008,13 @@ async def new_game(client, message, kind, stake):
     touch(u)
     if not cooldown(("newgame", u.id), 3):
         return
+    ag = eco().active_game_of(u.id)
+    if ag:
+        if ag["status"] == "open":
+            return await send(chat.id, "⏳ بازی قبلی‌ات هنوز کسی نپیوسته.\nیا لغوش کن، یا صبر کن تا کسی بپیوندد.",
+                              lambda s=True, i=ag["id"]: mk([[B("🚫 لغو بازی قبلی", "danger", callback_data=f"gm:c:{i}")]], s),
+                              reply_to=message.id)
+        return await send(chat.id, "🎮 الان وسط یک بازی هستی؛ بعد از پایانش می‌توانی بازی جدید بسازی.", reply_to=message.id)
     try:
         g = eco().game_create(kind, chat.id, u.id, stake)
     except E.EconomyError as e:
@@ -1051,8 +1097,14 @@ async def cb_game(client, cb):
             except E.EconomyError:
                 return await cb.answer("بازی دیگر قابل لغو نیست.", show_alert=True)
             await cb.answer("لغو شد و مبلغ برگشت.")
-            return await edit(chat_id, mid, "⛔ بازی توسط سازنده لغو شد.", None, True)
+            if g.get("msg_id"):
+                await edit(g["chat_id"], g["msg_id"], "⛔ بازی توسط سازنده لغو شد.", None, True)
+            if mid and mid != g.get("msg_id"):
+                await edit(chat_id, mid, "✅ بازی قبلی لغو شد و مبلغ برگشت؛ حالا می‌توانی بازی جدید بسازی.", None, False)
+            return
         if parts[1] == "j":
+            if eco().active_game_of(u.id, exclude=gid):
+                return await cb.answer("تو یک بازی فعال داری؛ اول تمامش کن یا لغوش کن.", show_alert=True)
             try:
                 g = eco().game_join(gid, u.id)
             except E.EconomyError as e:
@@ -1731,6 +1783,159 @@ def start_background():
     return asyncio.create_task(background())
 
 
+# =========================================================== quick access menu
+# (short label for the 3-per-row grid, full title, [(item label, help-section key or "@tab", panel tab or None)])
+QA_CATS = [
+    ("👤", "پروفایل", "پروفایل و ظاهر", [
+        ("⏰ ساعت", "datetime", "prof"), ("🪪 پروفایل", "profile", "prof"), ("🖼 آواتار", "avatar", "prof"),
+        ("🎨 لوگو", "logo", None), ("✨ افکت", "fun", None)]),
+    ("💬", "پیام", "پیام و تعامل", [
+        ("🗂 منشی", "secretary", "smart"), ("😍 ری‌اکشن", "react", None), ("🥇 کامنت اول", "firstcomment", None),
+        ("⭐ پریمیوم", "pemoji", "text"), ("↩️ ریپلای", "reply", None), ("🎯 لیست‌ها", "lists", "target"),
+        ("⏱ زمان‌دار", "timed", None)]),
+    ("🛡", "امنیت", "امنیت و مدیریت", [
+        ("🔒 پیوی", "security", "shield"), ("🚫 فیلتر", "wordfilter", "smart"), ("🔗 عضویت", "fjoin", "smart"),
+        ("👥 گروه", "group", None), ("🧹 پاکسازی", "cleanexit", None), ("🏗 ساخت", "create", None),
+        ("🔐 رمز", "crypto", None), ("💾 بکاپ", "backup", None)]),
+    ("🔎", "رسانه", "سرچ و رسانه", [
+        ("🔍 جستجو", "media", None), ("⬇️ دانلود", "downloader", None), ("🎵 آهنگ", "music", None),
+        ("📥 سیو", "privatechan", None), ("🎞 رسانه", "toolsmedia", None), ("🖼 متادیتا", "imgmeta", None),
+        ("🌐 اینترنت", "tools2", None)]),
+    ("🧠", "هوش", "هوش و ترجمه", [
+        ("🤖 هوش", "ai", None), ("🧠 پیشرفته", "aiplus", None), ("🧩 ابزار هوش", "toolsai", None),
+        ("🌐 ترجمه", "@tab", "lang")]),
+    ("📣", "تبچی", "تبچی و خودکار", [
+        ("📣 تبچی", "tabchi", "tab"), ("🔁 خودکار", "selfloop", None), ("📡 حضور", "@tab", "pres")]),
+    ("🧰", "ابزار", "ابزارها", [
+        ("📚 اصلی", "main", None), ("🧮 ریاضی", "toolsmath", None), ("🔑 رمز", "toolshash", None),
+        ("🕒 زمان", "toolstime", None), ("ℹ️ اطلاعات", "toolsinfo", None), ("💵 ارز", "rate", None),
+        ("👛 کیف پول", "wallet", None), ("🎛 کنترل", "panel", None), ("🛠 ابزارها", "tools", None)]),
+    ("🎮", "سرگرمی", "سرگرمی و الماس", [
+        ("🎲 بازی", "cheat", None), ("🐱 میو", "meowgame", None), ("🌾 فارم", "farm", None),
+        ("⭕ دوز", "ttt", None), ("💎 الماس", "diamond", None)]),
+]
+QA_PATTERN = (3, 3, 1, 3, 3)          # buttons per row on every page
+QA_PER_PAGE = sum(QA_PATTERN)
+
+
+def qa_grid(buttons, page, nav_cb):
+    """Lay buttons out as 3-3-1-3-3 per page; adds ⏪ ⏩ when there is more than one page."""
+    start = page * QA_PER_PAGE
+    chunk = buttons[start:start + QA_PER_PAGE]
+    rows, i = [], 0
+    for n in QA_PATTERN:
+        if i >= len(chunk):
+            break
+        rows.append(chunk[i:i + n])
+        i += n
+    nav = []
+    if page > 0:
+        nav.append(B("⏪", "primary", callback_data=nav_cb(page - 1)))
+    if start + QA_PER_PAGE < len(buttons):
+        nav.append(B("⏩", "primary", callback_data=nav_cb(page + 1)))
+    if nav:
+        rows.append(nav)
+    return rows
+
+
+def _h(text: str) -> str:
+    try:
+        return G["_md_to_html"](text)
+    except Exception:
+        return esc(text)
+
+
+def panel_home_markup(uid):
+    bot = G.get("BOT_USERNAME") or ""
+
+    def fn(styled=True):
+        return mk([[B("⚡ دسترسی سریع", "success", callback_data=f"qa:home:{uid}"),
+                    B("🤖 مینی اپ و پنل", "success", url=f"https://t.me/{bot}?start=mini")],
+                   [B("✖️ بستن", "danger", callback_data=f"close_{uid}")]], styled)
+    return fn
+
+
+def panel_home_text(uid) -> str:
+    return _h(G["_panel_caption"](uid))
+
+
+def qa_home_view(uid, page=0):
+    btns = [B(f"{sym} {short}", "success", callback_data=f"qa:cat:{uid}:{gi}:0")
+            for gi, (sym, short, _full, _it) in enumerate(QA_CATS)]
+    rows = qa_grid(btns, page, lambda p: f"qa:home:{uid}:{p}")
+    rows.append([B("🎛 پنل تنظیمات", "primary", callback_data=f"pt_prof_{uid}")])
+    rows.append([B("↩️ برگشت", "danger", callback_data=f"qa:panel:{uid}")])
+    names = "\n".join(f"◈ {sym} {full}" for sym, _s, full, _i in QA_CATS)
+    text = ("<b>‹ ʀɪᴠᴀʟ ›  دسترسی سریع</b>\n\nهمه‌ی قابلیت‌ها در بخش‌های زیر مرتب شده‌اند:\n\n"
+            f"{names}\n\nیک بخش را انتخاب کن.")
+    return text, rows
+
+
+def qa_cat_view(uid, gi, page=0):
+    sym, _short, full, items = QA_CATS[gi]
+    btns = []
+    for idx, (label, key, tab) in enumerate(items):
+        if key == "@tab":
+            btns.append(B(label, "primary", callback_data=f"pt_{tab}_{uid}"))
+        else:
+            btns.append(B(label, "primary", callback_data=f"qa:item:{uid}:{gi}:{idx}"))
+    rows = qa_grid(btns, page, lambda p: f"qa:cat:{uid}:{gi}:{p}")
+    rows.append([B("↩️ برگشت", "danger", callback_data=f"qa:home:{uid}")])
+    text = f"<b>‹ ʀɪᴠᴀʟ ›  {esc(full)}</b>\n\n{sym} {len(items)} بخش؛ یکی را انتخاب کن."
+    return text, rows
+
+
+def qa_item_view(uid, gi, idx):
+    _sym, _short, _full, items = QA_CATS[gi]
+    label, key, tab = items[idx]
+    sec = (G.get("HELP_SECTIONS") or {}).get(key)
+    text = _h(sec["text"]) if sec else f"<b>{esc(label)}</b>\n\nراهنمای این بخش هنوز آماده نیست."
+    rows = []
+    if tab:
+        rows.append([B("🎛 تنظیمات این بخش", "primary", callback_data=f"pt_{tab}_{uid}")])
+    rows.append([B("↩️ برگشت", "danger", callback_data=f"qa:cat:{uid}:{gi}:0")])
+    return text[:4000], rows
+
+
+async def edit_inline(cb, text, rows):
+    for styled in (True, False):
+        payload = {"text": text, "parse_mode": "HTML", "disable_web_page_preview": True,
+                   "reply_markup": mk(rows, styled)}
+        if getattr(cb, "inline_message_id", None):
+            payload["inline_message_id"] = cb.inline_message_id
+        else:
+            payload["chat_id"], payload["message_id"] = cb.message.chat.id, cb.message.id
+        j = await api("editMessageText", payload)
+        if j.get("ok") or "not modified" in str(j.get("description", "")).lower():
+            return True
+    return False
+
+
+async def cb_qa(client, cb):
+    try:
+        p = (cb.data or "").split(":")
+        uid = int(p[2])
+        if cb.from_user.id != uid and cb.from_user.id != int(G.get("ROOT_ADMIN", 0)):
+            return await cb.answer("این پنل مال خودت نیست.", show_alert=True)
+        await cb.answer()
+        act = p[1]
+        if act == "panel":
+            return await edit_inline(cb, panel_home_text(uid), panel_home_markup(uid)(True)["inline_keyboard"])
+        if act == "home":
+            text, rows = qa_home_view(uid, int(p[3]) if len(p) > 3 else 0)
+        elif act == "cat":
+            text, rows = qa_cat_view(uid, int(p[3]), int(p[4]) if len(p) > 4 else 0)
+        elif act == "item":
+            text, rows = qa_item_view(uid, int(p[3]), int(p[4]))
+        else:
+            return
+        await edit_inline(cb, text, rows)
+    except Exception as e:
+        log.exception("quick access: %s", e)
+    finally:
+        cb.stop_propagation()
+
+
 # ============================================================ login code keypad
 PAD_LEN = 5
 PAD_MAX = 6
@@ -1895,4 +2100,5 @@ def install(g: dict):
     reg_cb(cb_game, r"^gm:")
     reg_cb(cb_joined, r"^chk_manager_join_")
     reg_cb(cb_pad, r"^kp:")
+    reg_cb(cb_qa, r"^qa:")
     log.info("rival_core installed")

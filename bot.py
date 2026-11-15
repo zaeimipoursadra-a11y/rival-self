@@ -13235,7 +13235,7 @@ def build_elite_panel_rows (uid ):
         [tg ("چینی",t_lang =='zh-CN',f"lang_cn_{uid }"),
         tg ("خاموش",t_lang is None ,f"lang_off_{uid }")]]
 
-    rows .append ([("🔄 بروزرسانی",f"pt_{cur }_{uid }"),("✖️ بستن",f"close_{uid }")])
+    rows .append ([("🔄 بروزرسانی",f"pt_{cur }_{uid }"),("↩️ منو",f"qa:home:{uid }"),("✖️ بستن",f"close_{uid }")])
     return rows
 
 
@@ -14126,18 +14126,7 @@ async def manager_global_fjoin_check (client ,message ):
             not_joined .append (chat )
 
     if not_joined :
-        buttons =[]
-        for idx ,chat in enumerate (chats ,1 ):
-            chat_url =f"https://t.me/{chat .lstrip ('@')}"if isinstance (chat ,str )and chat .startswith ("@")else f"https://t.me/c/{str (chat ).replace ('-100','')}/1"
-            buttons .append ([InlineKeyboardButton (f"عضویت در کانال/گروه {idx }",url =chat_url )])
-
-        buttons .append ([InlineKeyboardButton ("عضو شدم",callback_data =f"chk_manager_join_{uid }")])
-
-        await message .reply_text (
-        "**برای استفاده از این ربات، ابتدا باید در کانال یا گروه زیر عضو شوید:**\n\n"
-        "پس از عضویت، روی دکمه «عضو شدم» بزنید تا امکان استفاده از ربات براتون فعال بشه.",
-        reply_markup =InlineKeyboardMarkup (buttons )
-        )
+        await rival_core .fjoin_prompt (message .chat .id ,uid ,chats )
         raise StopPropagation 
 
 @manager_bot .on_inline_query ()
@@ -14165,9 +14154,11 @@ async def inline_panel_handler (client ,query ):
 
         panel_text =_panel_caption (target_uid )
 
-        _res_item ={"type":"article","id":str (uuid .uuid4 ()),"title":"RIVALSELF PANEL",
-        "input_message_content":{"message_text":panel_text ,"parse_mode":"Markdown"},
-        "reply_markup":generate_panel_markup_json (target_uid )}
+        panel_text =rival_core .panel_home_text (target_uid )
+        _home_kb =rival_core .panel_home_markup (target_uid )(True )
+        _res_item ={"type":"article","id":str (uuid .uuid4 ()),"title":"RIVAL PANEL",
+        "input_message_content":{"message_text":panel_text ,"parse_mode":"HTML"},
+        "reply_markup":_home_kb }
         try :
             _card_url =await _card_url_for_panel (target_uid )
         except Exception as _ce :
@@ -14175,8 +14166,8 @@ async def inline_panel_handler (client ,query ):
             logger .warning (f"panel card failed: {type (_ce ).__name__ }: {_ce }")
         if _card_url :
             _res_item ={"type":"photo","id":str (uuid .uuid4 ()),"photo_url":_card_url ,"thumbnail_url":_card_url ,
-            "title":"RIVALSELF PANEL","caption":panel_text ,"parse_mode":"Markdown",
-            "reply_markup":generate_panel_markup_json (target_uid )}
+            "title":"RIVAL PANEL","caption":panel_text ,"parse_mode":"HTML",
+            "reply_markup":_home_kb }
         res =await bot_api_request ("answerInlineQuery",{
         "inline_query_id":query .id ,
         "cache_time":0 ,
@@ -14204,10 +14195,11 @@ async def inline_panel_handler (client ,query ):
             if uid ==ROOT_ADMIN :
                 target_uid =requested_uid 
 
-        _hitem ={"type":"article","id":str (uuid .uuid4 ()),"title":"RIVALSELF COMMAND CENTER",
-        "description":"Professional inline command guide",
-        "input_message_content":{"message_text":HELP_HOME_TEXT ,"parse_mode":"Markdown"},
-        "reply_markup":generate_help_home_markup_json (target_uid )}
+        _qa_text ,_qa_rows =rival_core .qa_home_view (target_uid )
+        _hitem ={"type":"article","id":str (uuid .uuid4 ()),"title":"RIVAL COMMAND CENTER",
+        "description":"Quick access to every command",
+        "input_message_content":{"message_text":_qa_text ,"parse_mode":"HTML"},
+        "reply_markup":rival_core .mk (_qa_rows ,True )}
         res =await bot_api_request ("answerInlineQuery",{
         "inline_query_id":query .id ,
         "cache_time":0 ,

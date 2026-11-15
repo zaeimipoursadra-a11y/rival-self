@@ -1,6 +1,6 @@
 # PROJECT_STATE.md — SELF RIVAL
 
-> Handoff document for a new Claude conversation. Snapshot date: **2026-11-15** (v2.1 — see 0c; v2: diamond economy; sections 0b and 15 describe what changed — older sections 1-14 are partly superseded).
+> Handoff document for a new Claude conversation. Snapshot date: **2026-11-15** (v2.2 — see 0d; v2.1 — see 0c; v2: diamond economy; sections 0b and 15 describe what changed — older sections 1-14 are partly superseded).
 > Built by static inspection of the repository (zip `Myself--main`, later modified in the previous conversation). **Nothing was executed against Telegram** and **no Git history exists in the zip** (no `.git`), so "recent changes" below come from the previous conversation, not from commits.
 > Legend: ✅ verified in code · ⚠️ implemented but untested in production · ❓ unknown / needs investigation.
 > No secrets are recorded here (names of environment variables only).
@@ -49,6 +49,17 @@ Everything below is ✅ compiled and unit-tested offline (`tests/test_economy.py
 | Panel (`.پنل`) | rewritten `build_elite_panel_rows`: status strip, 4×2 tab grid (active = `●`, blue), titled groups (`‹ … ›`), 2-column toggles (`🟢` green on / `⚫` plain off), footer `🔄 بروزرسانی | ✖️ بستن` (caption has a timestamp so refresh always changes). All `tg_*/cyc_*/lang_*` callbacks unchanged (verified by script against the old builder). Help group page is a clean list; new help section «الماس و بازی گروهی». |
 | Mini app | tab «الماس»: balance/days/rank/toman, renew, buy+gift links, referral, last 6 transactions, top-10 (English digits). `POST /miniapp/eco` also returns `history`, `restricted`, `gift`. |
 | Misc | fixed pre-existing `NameError: kb_user` in `start_handler` (activation-wait branch). |
+
+
+## 0d. v2.2 changes — ✅ unit-tested / smoke-tested offline, ⚠️ not run on Telegram
+| Area | Now |
+|---|---|
+| `.پنل` | inline result = caption (`_panel_caption`, converted to HTML) + `[⚡ دسترسی سریع | 🤖 مینی اپ و پنل]` (green, 2 per row) + `[✖️ بستن]` (red). «مینی اپ» is a URL button to `t.me/<bot>?start=mini` (inline messages cannot carry `web_app` buttons); `/start mini` replies with the real web_app button (`cmd_mini`). |
+| Quick access | `rival_core.QA_CATS` (8 categories → items → HELP_SECTIONS key and/or panel tab). Layout rule **3-3-1-3-3 per page** + ⏪/⏩ (`qa_grid`). Callbacks `qa:home|cat|item|panel:<uid>[:gi[:page|idx]]`, only the owner (or ROOT_ADMIN) may press. Items open the help text + «🎛 تنظیمات» (opens existing `pt_<tab>_<uid>` toggle panel). `.راهنما` inline now shows the same quick-access home. Toggle-panel footer: `🔄 | ↩️ منو | ✖️ بستن`. |
+| Forced join | `rival_core.fjoin_prompt` (called from `manager_global_fjoin_check`): owner's text, one **blue button per chat with the chat's real title** (cached 10 min), green «عــضــو شــدم ✅». |
+| Game guard | `Economy.active_game_of`: a user with an open table cannot open another (message + «🚫 لغو بازی قبلی» button) or join someone else's; players of a running game cannot start/join. |
+| Mini app v3 | new `miniapp/dashboard/app.html` (served at `/`; old dashboard at `/?legacy=1`). 4 tabs: داشبورد (hero, stats, category cards) · قابلیت‌ها (accordion categories → tiles; toggles via `/miniapp/set`; translate segmented) · الماس (balance, renew, referral, history, top-10) · حساب (info, links, admin stats + `g_fjoin`/`g_bot`). Uses existing endpoints `state`, `set`, `admin`, `eco`. Assets via `/assets/<name>` (whitelist), fonts via `/fonts/<name>`. Smoke-tested in node with a fake DOM (`/tmp`-style script, not shipped). |
+| Not possible | «فضولی‌ها» (who viewed my profile): Telegram exposes no such data to any client/bot API, so it was not built. |
 
 
 ## 0. How to use this file in a new conversation

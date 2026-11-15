@@ -365,9 +365,13 @@ def make_app(g):
 
 async def start(g):
     app = make_app(g)
-    page_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'miniapp', 'dashboard', 'index.html')
+    base = os.path.dirname(os.path.abspath(__file__))
+    new_path = os.path.join(base, 'miniapp', 'dashboard', 'app.html')
+    old_path = os.path.join(base, 'miniapp', 'dashboard', 'index.html')
 
     async def page(req):
+        # v3 app by default; the previous dashboard stays reachable at /?legacy=1 as a fallback
+        page_path = old_path if (req.query.get('legacy') or not os.path.exists(new_path)) else new_path
         try:
             with open(page_path, encoding='utf-8') as f:
                 html = f.read()
@@ -398,6 +402,21 @@ async def start(g):
         return web.FileResponse(path, headers={'Cache-Control': 'public, max-age=86400',
                                                'Access-Control-Allow-Origin': '*'})
 
+    asset_dir = os.path.join(base, 'self_tools', 'assets')
+    ASSETS = {'banner.jpg': os.path.join(base, 'self_tools', 'rival_banner.jpg'),
+              'banner_referral.jpg': os.path.join(asset_dir, 'banner_referral.jpg'),
+              'banner_bet.jpg': os.path.join(asset_dir, 'banner_bet.jpg'),
+              'banner_dooz.jpg': os.path.join(asset_dir, 'banner_dooz.jpg'),
+              'card_balance.jpg': os.path.join(asset_dir, 'card_balance.jpg'),
+              'card_player.jpg': os.path.join(asset_dir, 'card_player.jpg')}
+
+    async def asset(req):
+        path = ASSETS.get(req.match_info.get('name', ''))
+        if not path or not os.path.isfile(path):
+            return web.Response(status=404)
+        return web.FileResponse(path, headers={'Cache-Control': 'public, max-age=86400'})
+
+    app.router.add_get('/assets/{name}', asset)
     app.router.add_get('/fonts/{name}', font)
     app.router.add_get('/cardimg/{tok}', cardimg)
     app.router.add_get('/', page)
