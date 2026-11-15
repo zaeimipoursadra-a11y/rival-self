@@ -1,6 +1,6 @@
 # PROJECT_STATE.md — SELF RIVAL
 
-> Handoff document for a new Claude conversation. Snapshot date: **2026-11-15** (v2: diamond economy; sections 0b and 15 describe what changed — older sections 1-14 are partly superseded).
+> Handoff document for a new Claude conversation. Snapshot date: **2026-11-15** (v2.1 — see 0c; v2: diamond economy; sections 0b and 15 describe what changed — older sections 1-14 are partly superseded).
 > Built by static inspection of the repository (zip `Myself--main`, later modified in the previous conversation). **Nothing was executed against Telegram** and **no Git history exists in the zip** (no `.git`), so "recent changes" below come from the previous conversation, not from commits.
 > Legend: ✅ verified in code · ⚠️ implemented but untested in production · ❓ unknown / needs investigation.
 > No secrets are recorded here (names of environment variables only).
@@ -20,7 +20,7 @@ Everything below is ✅ compiled and unit-tested offline (`tests/test_economy.py
 | Subscription | trial days (default 5, `/settrial`) at first login; existing users got 7 grace days once (`migrated_v1`). Expiry loop stops the self (no log_out); renewal restarts it. Admins exempt. Hooks: `finalize_login` → `rival_core.on_login`; `_start_bot_instance_now_impl` and `start_bot_instance` check `rival_core.sub_ok`. |
 | Shop | presets + custom amount ≥500 → invoice (30 min) → user sends receipt photo → forwarded to all admins with ✅/❌ → credit. Payment text set with `/setcard` or admin panel. Receipt `file_unique_id` is UNIQUE. |
 | Referral | `/start ref_<uid>`; reward only when the **global forced join** (admin menu «عضویت اجباری سراسری») is ON and satisfied: +200 inviter, +100 invitee; +500 inviter after invitee's self stayed active 3 days (phone hash dedupe, 20/day cap). Callback `chk_manager_join_*` (previously unhandled) is now handled in rival_core. |
-| Games | only in the chat registered with `/setofficial` (run inside the group; bot must be admin so it sees plain text). `بازی 500` / `/bet 500`: 2 players, CSPRNG winner, stake escrowed, 10% tax on profit, min 10 / max 100,000. `دوز 1000` / `/dooz 1000`: 3×3 inline board, creator = ❌ starts, 120 s move timeout = forfeit, draw = refund. Open games expire after 10 min (refund). |
+| Games | only in the chat registered with `/setofficial` (run inside the group; bot must be admin so it sees plain text). `بازی 500` / `/bet 500`: 2 players, CSPRNG winner, stake escrowed, 10% tax (see 0c), min 10 / max 100,000. `دوز 1000` / `/dooz 1000`: 3×3 inline board, creator = ❌ starts, 120 s move timeout = forfeit, draw = refund. Open games expire after 10 min (refund). |
 | Commands | `موجودی` / `/balance` and `برترین‌ها` / `/top` in bot PV and groups (balance card photo; top-10 + your rank). Admin: `/addgems id n`, `/adddays id n`, `/settrial n`, `/setcard text`, `/setofficial`, `/unsetofficial`, `/economy`; keyboard buttons «💎 اقتصاد» / «🔙 منوی کاربری». |
 | Login | code entry is an inline keypad (`kp:*` callbacks, 3 per row, ⌫ حذف کد, ✖️ انصراف, ✅ تأیید) → calls the existing `text_handler` with a `_MenuMsg`; typing the code still works as fallback. |
 | Removed | `nsfw_controller` + help section, `اسپم`/`فلود` commands + help lines. Enemy/friend/crush lists untouched. |
@@ -34,6 +34,22 @@ Everything below is ✅ compiled and unit-tested offline (`tests/test_economy.py
 3. Decide payment methods beyond manual card-to-card.
 4. Gambling with purchased diamonds was chosen by the owner (single balance); legal/ban risk acknowledged.
 5. Unchanged old risks from §11 (custom encryption, hot-deploy path, unpinned deps).
+
+## 0c. v2.1 changes (supersede 0b where they differ) — ✅ unit-tested offline, ⚠️ not run on Telegram
+| Area | Now |
+|---|---|
+| Tax rule | games: **10% of the whole pot** (prize = 2×stake − 10%·2×stake, e.g. 866 → 1,559). Constant `E.TAX_PERCENT`; formulas `Economy.tax_of/prize_of`. (v2 had 10% of profit — owner's example numbers matched the pot rule.) |
+| Timers | `E.GAME_TTL`=300 s (nobody joined → cancelled + refund + message), `E.MOVE_TTL`=60 s (tic-tac-toe mover loses). Games loop ticks every 5 s (`rival_core.background`). |
+| Game UI | open table text per owner template (`table_caption`); finished games are *edited* to the result text + 3 button rows (`result_markup`: جایزه / موجودی برنده / موجودی بازنده); draw → `draw_markup`; cancel text «⛔ بازی توسط سازنده لغو شد.». All numbers use English digits (`rival_core.fa`). |
+| Balance | under the card: `[N 💎]` / `[✅ روشن|⛔ خاموش][N روز]` / `[N تومان]` (display-only `noop` buttons). |
+| Transfer | `انتقال 100` (reply to user, or `انتقال 100 @user`), official chat only, receiver must have started the bot, 10% tax on top (sender pays 110, receiver gets 100, tax → house uid 0). `Economy.transfer`. |
+| Gift codes | tables `gift_codes`, `gift_uses`. Admin wizard (`/newcode` or panel «🎁 ساخت کد هدیه»): code / amount / duration / capacity; list+delete (`/codes`). Users: «💎 الماس رایگان» → «🎁 ثبت کد هدیه» or deep link `/start gift`. Case-insensitive, once per user. |
+| Admin | `/subgems`, `/limit id [duration]` (none = permanent), `/unlimit id`; table `restrictions`; restricted users: self stopped, cannot start (`rival_core.blocked_reason` = restricted/expired). Any typed id must belong to a user who **started** the bot (`wallets.started`), else «آیدی اشتباه است». Panel «💎 اقتصاد» has 5 rows of buttons. |
+| started flag | `wallets.started` set only in private chats with the manager bot; one-time migration marks existing users (`migrated_started_v2`). |
+| Panel (`.پنل`) | rewritten `build_elite_panel_rows`: status strip, 4×2 tab grid (active = `●`, blue), titled groups (`‹ … ›`), 2-column toggles (`🟢` green on / `⚫` plain off), footer `🔄 بروزرسانی | ✖️ بستن` (caption has a timestamp so refresh always changes). All `tg_*/cyc_*/lang_*` callbacks unchanged (verified by script against the old builder). Help group page is a clean list; new help section «الماس و بازی گروهی». |
+| Mini app | tab «الماس»: balance/days/rank/toman, renew, buy+gift links, referral, last 6 transactions, top-10 (English digits). `POST /miniapp/eco` also returns `history`, `restricted`, `gift`. |
+| Misc | fixed pre-existing `NameError: kb_user` in `start_handler` (activation-wait branch). |
+
 
 ## 0. How to use this file in a new conversation
 

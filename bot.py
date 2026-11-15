@@ -13108,20 +13108,20 @@ def _panel_caption (uid ):
         _days ,_gems ="—","—"
     return (
     "**‹ ʀɪᴠᴀʟ ›  پنل کنترل**\n\n"
-    f"◈ شناسه ⟢ `{uid }`\n"
     f"◈ وضعیت ⟢ {st }\n"
-    f"◈ ماژول ⟢ `{on }` روشن · `{off }` خاموش\n"
+    f"◈ شناسه ⟢ `{uid }`\n\n"
     f"◈ اشتراک ⟢ {_days }\n"
-    f"◈ الماس ⟢ {_gems } 💎\n"
-    f"◈ بخش ⟢ {_panel_tab_label (uid )}\n\n"
-    "از تب‌های زیر بخش موردنظر را باز کن."
+    f"◈ الماس ⟢ {_gems } 💎\n\n"
+    f"◈ ماژول‌ها ⟢ `{on }` روشن · `{off }` خاموش\n"
+    f"◈ بخش ⟢ {_panel_tab_label (uid )}\n"
+    f"◈ بروزرسانی ⟢ `{datetime .now ().strftime ('%H:%M:%S')}`"
     )
 
 PANEL_TAB = {}
 PANEL_COLOR_STATUS = {}
 HELP_COLOR_STATUS = {}
 PANEL_TABS = [("prof", "👤", "پروفایل"), ("text", "✍️", "متن"), ("smart", "🧠", "هوشمند"),
-              ("shield", "🛡", "سپر"), ("pres", "🟢", "حضور"), ("tab", "📣", "تبچی"),
+              ("shield", "🛡", "سپر"), ("pres", "📡", "حضور"), ("tab", "📣", "تبچی"),
               ("target", "🎯", "تارگت"), ("lang", "🌐", "ترجمه")]
 PANEL_EN = {"prof": "ظاهر و پروفایل", "text": "موتور متن", "smart": "سیستم هوشمند",
             "shield": "سپر حریم خصوصی", "pres": "حضور و فعالیت", "tab": "تبلیغات و تبچی",
@@ -13139,8 +13139,13 @@ def _panel_tab_label (uid ):
     return "👤 پروفایل"
 
 def build_elite_panel_rows (uid ):
-    def c (val ):
+    """Panel layout v2: status strip, 4x2 tab grid, titled groups of 2-column toggles, footer.
+    Callback names are unchanged (tg_*, cyc_*, lang_*, pt_*, close_*)."""
+    def dot (val ):
         return "🟢"if val else "⚫"
+
+    def tg (label ,val ,cb ):
+        return (f"{dot (val )} {label }",cb )
 
     preview =stylize_time ("12:34",USER_FONT_CHOICES .get (uid ,'stylized'))
     t_lang =AUTO_TRANSLATE_TARGET .get (uid )
@@ -13148,93 +13153,91 @@ def build_elite_panel_rows (uid ):
 
     cur =_panel_tab (uid )
     on ,off =_panel_stats (uid )
-    rows =[[(f"🟢 {on } روشن  ·  ⚫ {off } خاموش","none")]]
-    tabs =[]
-    for k ,sym ,lab in PANEL_TABS :
-        tabs .append ((f"🔹 {lab }"if k ==cur else f"{sym } {lab }",f"pt_{k }_{uid }"))
-    for i in range (0 ,len (tabs ),3 ):
-        rows .append (tabs [i :i +3 ])
-    rows .append ([(f"‹ {PANEL_EN .get (cur ,'ʀɪᴠᴀʟ')} ›","none")])
+    rows =[[(f"📊 {on } روشن  ·  {off } خاموش","none")]]
+    tabs =[(f"● {sym } {lab }"if k ==cur else f"{sym } {lab }",f"pt_{k }_{uid }")for k ,sym ,lab in PANEL_TABS ]
+    for i in range (0 ,len (tabs ),4 ):
+        rows .append (tabs [i :i +4 ])
+
+    def sub (t ):
+        rows .append ([(f"‹ {t } ›","none")])
 
     if cur =="prof":
-        rows +=[
-        [(f"🕒 ساعت پروفایل {c (CLOCK_STATUS .get (uid ,False ))}",f"tg_clock_{uid }"),
-        (f"🔠 استایل نام: {preview }",f"cyc_font_{uid }")],
-        [(f"🕰 ساعت بیو {c (BIO_CLOCK_STATUS .get (uid ,False ))}",f"tg_bioclock_{uid }"),
-        (f"📅 تاریخ بیو {c (BIO_DATE_STATUS .get (uid ,False ))}",f"tg_biodate_{uid }")],
+        sub ("نام و ساعت")
+        rows +=[[tg ("ساعت پروفایل",CLOCK_STATUS .get (uid ,False ),f"tg_clock_{uid }"),
+        (f"🔠 استایل نام: {preview }",f"cyc_font_{uid }")]]
+        sub ("بیو")
+        rows +=[[tg ("ساعت بیو",BIO_CLOCK_STATUS .get (uid ,False ),f"tg_bioclock_{uid }"),
+        tg ("تاریخ بیو",BIO_DATE_STATUS .get (uid ,False ),f"tg_biodate_{uid }")],
         [(f"🗓 تقویم: {dt_type }",f"tg_biodatetype_{uid }"),
-        ("🎨 استایل بیو ◂",f"cyc_biofont_{uid }")],
-        [(f"🖼 آواتار زنده {c (AVATAR_STATUS .get (uid ,False ))}",f"tg_avatar_{uid }")],
-        [(f"🌈 پنل رنگی {c (PANEL_COLOR_STATUS .get (uid ,True ))}",f"tg_pcolor_{uid }"),
-        (f"🌈 راهنما رنگی {c (HELP_COLOR_STATUS .get (uid ,True ))}",f"tg_hcolor_{uid }")],
-        ]
+        ("🎨 استایل بیو",f"cyc_biofont_{uid }")]]
+        sub ("ظاهر")
+        rows +=[[tg ("آواتار زنده",AVATAR_STATUS .get (uid ,False ),f"tg_avatar_{uid }")],
+        [tg ("پنل رنگی",PANEL_COLOR_STATUS .get (uid ,True ),f"tg_pcolor_{uid }"),
+        tg ("راهنما رنگی",HELP_COLOR_STATUS .get (uid ,True ),f"tg_hcolor_{uid }")]]
     elif cur =="text":
-        rows +=[
-        [(f"🅱️ بولد {c (BOLD_MODE_STATUS .get (uid ,False ))}",f"tg_bold_{uid }"),
-        (f"🫥 اسپویلر {c (SPOILER_MODE_STATUS .get (uid ,False ))}",f"tg_spoil_{uid }")],
-        [(f"💬 نقل و قول {c (CODE_MODE_STATUS .get (uid ,False ))}",f"tg_code_{uid }"),
-        (f"➖ زیرخط {c (UNDERLINE_MODE_STATUS .get (uid ,False ))}",f"tg_under_{uid }")],
-        [(f"⏳ تدریجی {c (GRADUAL_MODE_STATUS .get (uid ,False ))}",f"tg_gradual_{uid }"),
-        (f"🔹 نقطه‌ای {c (DOT_COMMANDS_STATUS .get (uid ,True ))}",f"tg_dotcmd_{uid }")],
-        [(f"⭐ ایموجی پرمیوم {c (PEMOJI_STATUS .get (uid ,False ))}",f"tg_pemoji_{uid }")],
-        ]
+        sub ("قالب پیام")
+        rows +=[[tg ("بولد",BOLD_MODE_STATUS .get (uid ,False ),f"tg_bold_{uid }"),
+        tg ("اسپویلر",SPOILER_MODE_STATUS .get (uid ,False ),f"tg_spoil_{uid }")],
+        [tg ("نقل و قول",CODE_MODE_STATUS .get (uid ,False ),f"tg_code_{uid }"),
+        tg ("زیرخط",UNDERLINE_MODE_STATUS .get (uid ,False ),f"tg_under_{uid }")],
+        [tg ("تدریجی",GRADUAL_MODE_STATUS .get (uid ,False ),f"tg_gradual_{uid }")]]
+        sub ("سیستم")
+        rows +=[[tg ("دستور با نقطه",DOT_COMMANDS_STATUS .get (uid ,True ),f"tg_dotcmd_{uid }"),
+        tg ("ایموجی پرمیوم",PEMOJI_STATUS .get (uid ,False ),f"tg_pemoji_{uid }")]]
     elif cur =="smart":
-        rows +=[
-        [(f"🔔 هشدار تگ {c (TAG_ALERT_STATUS .get (uid ,False ))}",f"tg_tagalert_{uid }"),
-        (f"🚫 فیلتر کلمات {c (FILTER_WORDS_ACTIVE .get (uid ,False ))}",f"tg_wordfilter_{uid }")],
-        [(f"🗑 ضد دیلیت {c (ANTI_DELETE_STATUS .get (uid ,False ))}",f"tg_antidel_{uid }"),
-        (f"✏️ ضد ادیت {c (ANTI_EDIT_STATUS .get (uid ,False ))}",f"tg_antiedit_{uid }")],
-        [(f"🗂 منشی خودکار {c (SECRETARY_MODE_STATUS .get (uid ,False ))}",f"tg_sec_{uid }"),
-        (f"💨 پاک شونده {c (SELF_DESTRUCT_STATUS .get (uid ,False ))}",f"tg_selfdestruct_{uid }")],
-        [(f"🥇 کامنت اول {c (FIRST_COMMENT_STATUS .get (uid ,False ))}",f"tg_firstcomment_{uid }"),
-        (f"👁 سین خودکار {c (AUTO_SEEN_STATUS .get (uid ,False ))}",f"tg_seen_{uid }")],
-        [(f"🔗 عضویت اجباری {c (FORCED_JOIN_ACTIVE .get (uid ,False ))}",f"tg_fjoin_{uid }"),
-        (f"⏱ ذخیره تایم‌دار {c (AUTO_SAVE_VIEW_ONCE .get (uid ,False ))}",f"tg_autosv_{uid }")],
-        ]
+        sub ("محافظت پیام")
+        rows +=[[tg ("ضد دیلیت",ANTI_DELETE_STATUS .get (uid ,False ),f"tg_antidel_{uid }"),
+        tg ("ضد ادیت",ANTI_EDIT_STATUS .get (uid ,False ),f"tg_antiedit_{uid }")],
+        [tg ("هشدار تگ",TAG_ALERT_STATUS .get (uid ,False ),f"tg_tagalert_{uid }"),
+        tg ("فیلتر کلمات",FILTER_WORDS_ACTIVE .get (uid ,False ),f"tg_wordfilter_{uid }")]]
+        sub ("اتوماسیون")
+        rows +=[[tg ("منشی خودکار",SECRETARY_MODE_STATUS .get (uid ,False ),f"tg_sec_{uid }"),
+        tg ("پاک‌شونده",SELF_DESTRUCT_STATUS .get (uid ,False ),f"tg_selfdestruct_{uid }")],
+        [tg ("کامنت اول",FIRST_COMMENT_STATUS .get (uid ,False ),f"tg_firstcomment_{uid }"),
+        tg ("سین خودکار",AUTO_SEEN_STATUS .get (uid ,False ),f"tg_seen_{uid }")],
+        [tg ("عضویت اجباری",FORCED_JOIN_ACTIVE .get (uid ,False ),f"tg_fjoin_{uid }"),
+        tg ("ذخیره تایم‌دار",AUTO_SAVE_VIEW_ONCE .get (uid ,False ),f"tg_autosv_{uid }")]]
     elif cur =="shield":
-        rows +=[
-        [(f"🔒 قفل کامل پیوی {c (PV_LOCK_STATUS .get (uid ,False ))}",f"tg_pv_{uid }")],
-        [(f"📷 عکس {c (PV_PHOTO_LOCK .get (uid ,False ))}",f"tg_pvph_{uid }"),
-        (f"🎬 ویدیو {c (PV_VIDEO_LOCK .get (uid ,False ))}",f"tg_pvvi_{uid }")],
-        [(f"🎞 گیف {c (PV_GIF_LOCK .get (uid ,False ))}",f"tg_pvgi_{uid }"),
-        (f"🎙 ویس {c (PV_VOICE_LOCK .get (uid ,False ))}",f"tg_pvvo_{uid }")],
-        [(f"🎵 آهنگ {c (PV_MUSIC_LOCK .get (uid ,False ))}",f"tg_pvmu_{uid }"),
-        (f"🏷 استیکر {c (PV_STICKER_LOCK .get (uid ,False ))}",f"tg_pvst_{uid }")],
-        [(f"📍 لوکیشن {c (PV_LOC_LOCK .get (uid ,False ))}",f"tg_pvloc_{uid }"),
-        (f"😀 ایموجی {c (PV_EMO_LOCK .get (uid ,False ))}",f"tg_pvemo_{uid }")],
-        [(f"📝 متن {c (PV_TXT_LOCK .get (uid ,False ))}",f"tg_pvtxt_{uid }")],
-        ]
+        sub ("قفل پیوی")
+        rows +=[[tg ("قفل کامل پیوی",PV_LOCK_STATUS .get (uid ,False ),f"tg_pv_{uid }")]]
+        sub ("فیلتر رسانه در پیوی")
+        rows +=[[tg ("عکس",PV_PHOTO_LOCK .get (uid ,False ),f"tg_pvph_{uid }"),
+        tg ("ویدیو",PV_VIDEO_LOCK .get (uid ,False ),f"tg_pvvi_{uid }")],
+        [tg ("گیف",PV_GIF_LOCK .get (uid ,False ),f"tg_pvgi_{uid }"),
+        tg ("ویس",PV_VOICE_LOCK .get (uid ,False ),f"tg_pvvo_{uid }")],
+        [tg ("آهنگ",PV_MUSIC_LOCK .get (uid ,False ),f"tg_pvmu_{uid }"),
+        tg ("استیکر",PV_STICKER_LOCK .get (uid ,False ),f"tg_pvst_{uid }")],
+        [tg ("لوکیشن",PV_LOC_LOCK .get (uid ,False ),f"tg_pvloc_{uid }"),
+        tg ("ایموجی",PV_EMO_LOCK .get (uid ,False ),f"tg_pvemo_{uid }")],
+        [tg ("متن",PV_TXT_LOCK .get (uid ,False ),f"tg_pvtxt_{uid }")]]
     elif cur =="pres":
-        rows +=[
-        [(f"⌨️ تایپینگ {c (TYPING_MODE_STATUS .get (uid ,False ))}",f"tg_type_{uid }"),
-        (f"🎮 بازی {c (PLAYING_MODE_STATUS .get (uid ,False ))}",f"tg_game_{uid }")],
-        [(f"📤 ارسال عکس {c (UPLOAD_PHOTO_STATUS .get (uid ,False ))}",f"tg_actph_{uid }"),
-        (f"🔴 ضبط ویس {c (RECORD_VOICE_STATUS .get (uid ,False ))}",f"tg_actvo_{uid }")],
-        [(f"📺 تماشای گیف {c (WATCH_GIF_STATUS .get (uid ,False ))}",f"tg_actgi_{uid }")],
-        ]
+        sub ("وضعیت نمایشی")
+        rows +=[[tg ("تایپینگ",TYPING_MODE_STATUS .get (uid ,False ),f"tg_type_{uid }"),
+        tg ("در حال بازی",PLAYING_MODE_STATUS .get (uid ,False ),f"tg_game_{uid }")],
+        [tg ("ارسال عکس",UPLOAD_PHOTO_STATUS .get (uid ,False ),f"tg_actph_{uid }"),
+        tg ("ضبط ویس",RECORD_VOICE_STATUS .get (uid ,False ),f"tg_actvo_{uid }")],
+        [tg ("تماشای گیف",WATCH_GIF_STATUS .get (uid ,False ),f"tg_actgi_{uid }")]]
     elif cur =="tab":
-        rows +=[
-        [(f"👤 پیوی {c (TABCHI_PV_STATUS .get (uid ,False ))}",f"tg_tabpv_{uid }"),
-        (f"👥 گروه {c (TABCHI_GP_STATUS .get (uid ,False ))}",f"tg_tabgp_{uid }")],
-        [(f"🧠 هوشمند {c (TABCHI_SMART_STATUS .get (uid ,False ))}",f"tg_tabsmart_{uid }"),
-        (f"⚡ سرعت: {TABCHI_SPEED .get (uid ,'medium')}",f"tg_tabspd_{uid }")],
-        ]
+        sub ("ارسال خودکار")
+        rows +=[[tg ("پیوی",TABCHI_PV_STATUS .get (uid ,False ),f"tg_tabpv_{uid }"),
+        tg ("گروه",TABCHI_GP_STATUS .get (uid ,False ),f"tg_tabgp_{uid }")],
+        [tg ("هوشمند",TABCHI_SMART_STATUS .get (uid ,False ),f"tg_tabsmart_{uid }"),
+        (f"⚡ سرعت: {TABCHI_SPEED .get (uid ,'medium')}",f"tg_tabspd_{uid }")]]
     elif cur =="target":
-        rows +=[
-        [(f"⚔️ دشمن {c (ENEMY_ACTIVE .get (uid ,False ))}",f"tg_enm_{uid }"),
-        (f"🤝 دوست {c (FRIEND_ACTIVE .get (uid ,False ))}",f"tg_frnd_{uid }")],
-        [(f"💘 کراش {c (CRASH_ACTIVE .get (uid ,False ))}",f"tg_crsh_{uid }")],
-        ]
+        sub ("پاسخ خودکار به لیست‌ها")
+        rows +=[[tg ("دشمن",ENEMY_ACTIVE .get (uid ,False ),f"tg_enm_{uid }"),
+        tg ("دوست",FRIEND_ACTIVE .get (uid ,False ),f"tg_frnd_{uid }")],
+        [tg ("کراش",CRASH_ACTIVE .get (uid ,False ),f"tg_crsh_{uid }")]]
     else :
-        rows +=[
-        [(f"EN {c (t_lang =='en')}",f"lang_en_{uid }"),
-        (f"RU {c (t_lang =='ru')}",f"lang_ru_{uid }")],
-        [(f"CN {c (t_lang =='zh-CN')}",f"lang_cn_{uid }"),
-        (f"خاموش {c (t_lang is None )}",f"lang_off_{uid }")],
-        ]
+        sub ("زبان ترجمه‌ی خودکار")
+        rows +=[[tg ("انگلیسی",t_lang =='en',f"lang_en_{uid }"),
+        tg ("روسی",t_lang =='ru',f"lang_ru_{uid }")],
+        [tg ("چینی",t_lang =='zh-CN',f"lang_cn_{uid }"),
+        tg ("خاموش",t_lang is None ,f"lang_off_{uid }")]]
 
-    rows .append ([("✖️ بستن",f"close_{uid }")])
+    rows .append ([("🔄 بروزرسانی",f"pt_{cur }_{uid }"),("✖️ بستن",f"close_{uid }")])
     return rows
+
 
 def generate_panel_markup (uid ):
     return InlineKeyboardMarkup ([
@@ -13244,15 +13247,17 @@ def generate_panel_markup (uid ):
 
 def _btn_style (text ,cb ):
     c =str (cb or "")
+    t =str (text ).strip ()
     if c =="none":
         return ""
     if c .startswith ("close")or c .startswith ("help_close"):
         return "danger"
     if c .startswith ("pt_"):
-        return "success"if str (text ).startswith ("🔹")else "primary"
-    t =str (text ).rstrip ()
-    if t .endswith ("🟢"):
+        return "primary"if t .startswith ("●")else ""
+    if t .startswith ("🟢"):
         return "success"
+    if t .startswith ("⚫"):
+        return ""
     return "primary"
 
 def _json_btn (text ,cb ):
@@ -13824,6 +13829,30 @@ HELP_SECTIONS ={
 
 """.strip ()
 },
+"diamond":{
+"title":"الماس و بازی گروهی",
+"text":"""
+**‹ ʀɪᴠᴀʟ ›  الماس و بازی گروهی**
+
+**هرجا (ربات یا گروه)**
+◈ `موجودی` ⟢ کارت الماس، معادل تومان، روزهای سلف
+◈ `برترین‌ها` ⟢ ۱۰ نفر برتر و جایگاه تو
+
+**فقط در گپ رسمی**
+◈ `بازی 500` ⟢ شرط‌بندی دونفره؛ برنده با قرعه‌ی تصادفی
+◈ `دوز 1000` ⟢ دوز ۳×۳ دونفره؛ سازنده شروع می‌کند
+◈ `انتقال 100` ⟢ ریپلای روی کاربر یا `انتقال 100 @یوزرنیم`
+
+**قوانین**
+◈ مبلغ ورودی ۱۰ تا ۱۰۰٬۰۰۰ الماس؛ مالیات ۱۰٪ از کل جایزه
+◈ تا ۵ دقیقه کسی نپیوندد، بازی باطل و مبلغ برمی‌گردد
+◈ در دوز، ۶۰ ثانیه بدون حرکت یعنی باخت
+◈ انتقال ۱۰٪ مالیات روی مبلغ دارد و گیرنده باید ربات را استارت کرده باشد
+
+**الماس رایگان**
+◈ از ربات: «💎 الماس رایگان» ⟢ لینک دعوت و ثبت کد هدیه
+""".strip ()
+},
 "cleanexit":{
 "title":"پاکسازی و خروج",
 "text":"""
@@ -13948,7 +13977,7 @@ HELP_BUTTON_GROUPS =[
 ("رسانه","media"),("سیو کانال","privatechan"),("کیف پول","wallet"),("بکاپ","backup"),("ایموجی پرمیوم","pemoji"),("لوگو","logo"),("آواتار","avatar"),("آهنگ","music"),("نرخ ارز","rate"),("هوش مصنوعی","ai"),
 ]),
 ("🎮","سرگرمی",[
-("بازی","cheat"),("فان","fun"),("عضویت اجباری","fjoin"),
+("بازی","cheat"),("فان","fun"),("عضویت اجباری","fjoin"),("الماس و بازی گروهی","diamond"),
 ]),
 ("🧰","ابزارهای افزونه (/)",[
 ("ریاضی و متن","toolsmath"),("رمز و داده","toolshash"),("زمان و مکان","toolstime"),
@@ -13988,12 +14017,11 @@ def get_help_group_text (gi ):
         sym ,title ,items =HELP_BUTTON_GROUPS [gi ]
     except Exception :
         return HELP_HOME_TEXT
-    names =" · ".join (lb for lb ,_k in items )
-    return (f"**‹ ʀɪᴠᴀʟ ›  {title }**\n"
-    "\n\n"
-    f"{sym } {len (items )} بخش\n"
+    names ="\n".join (f"◈ {lb }"for lb ,_k in items )
+    return (f"**‹ ʀɪᴠᴀʟ ›  {title }**\n\n"
+    f"{sym } {len (items )} بخش:\n\n"
     f"{names }\n\n"
-    "یکی را انتخاب کنید.")
+    "یکی را انتخاب کن.")
 
 def generate_help_group_markup (uid ,gi ):
     rows =[[InlineKeyboardButton (lb ,callback_data =f"help_{ky }_{uid }")for lb ,ky in row ]
@@ -16117,7 +16145,7 @@ async def start_handler (client ,message ):
     if has_session :
         wait_left =_activation_wait_left (uid )
         if wait_left >0 :
-            await message .reply_text (f"**فعال‌سازی در انتظار است.**\n\nاز انتظار ثابت ۲ دقیقه‌ای، {math .ceil (wait_left )} ثانیه باقی مانده است.\nبعد از اتصال، پیام آماده‌بودن و دستور استفاده ارسال می‌شود.",reply_markup =kb_user )
+            await message .reply_text (f"**فعال‌سازی در انتظار است.**\n\nاز انتظار ثابت ۲ دقیقه‌ای، {math .ceil (wait_left )} ثانیه باقی مانده است.\nبعد از اتصال، پیام آماده‌بودن و دستور استفاده ارسال می‌شود.",reply_markup =_main_kb_pyro (uid ))
             phone =user_data .get ("phone")
             s_str =_db_decrypt (user_data .get ("session_string",""))
             if phone and s_str :asyncio .create_task (start_bot_instance (s_str ,phone ,uid ,'stylized'))

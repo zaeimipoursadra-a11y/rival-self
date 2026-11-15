@@ -323,7 +323,18 @@ def make_app(g):
         bot = getattr(me, 'username', '') or ''
         top = [{'name': r.get('name') or (('@' + r['username']) if r.get('username') else str(r['uid'])),
                 'balance': r['balance']} for r in e.top(10)]
-        return {'ok': not err, 'err': err, 'balance': bal, 'toman': E.Economy.toman(bal),
+        labels = {'purchase': 'خرید الماس', 'buy_sub': 'تمدید اشتراک', 'ref_join': 'پاداش دعوت',
+                  'ref_welcome': 'هدیه خوش‌آمد', 'ref_active': 'پاداش فعال‌سازی', 'gift_code': 'کد هدیه',
+                  'admin_add': 'شارژ مدیریت', 'admin_sub': 'کسر مدیریت', 'bet_win': 'برد شرطی', 'bet_stake': 'شرط',
+                  'bet_refund': 'برگشت شرط', 'bet_draw': 'برگشت شرط', 'ttt_win': 'برد دوز', 'ttt_stake': 'ورودی دوز',
+                  'ttt_refund': 'برگشت دوز', 'ttt_draw': 'مساوی دوز', 'transfer_out': 'انتقال ارسالی',
+                  'transfer_in': 'انتقال دریافتی'}
+        hist = [{'t': labels.get(h['reason'], h['reason']), 'd': h['delta'], 'b': h['balance_after']}
+                for h in e.history(uid, 6)]
+        rs = e.restriction(uid)
+        return {'ok': not err, 'err': err, 'history': hist, 'restricted': bool(rs),
+                'restricted_until': (rs or {}).get('until', 0), 'gift': f'https://t.me/{bot}?start=gift',
+                'balance': bal, 'toman': E.Economy.toman(bal),
                 'days': 9999 if _is_admin(g, uid) else e.days_left(uid), 'rank': e.rank(uid), 'top': top,
                 'ref': f'https://t.me/{bot}?start=ref_{uid}', 'bot': bot,
                 'month_cost': E.DIAMONDS_PER_MONTH}
