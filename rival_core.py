@@ -1331,7 +1331,7 @@ def eco_admin_text() -> str:
             "<b>دستورها</b>\n"
             "<code>/addgems آیدی تعداد</code>\n<code>/subgems آیدی تعداد</code>\n<code>/adddays آیدی روز</code>\n"
             "<code>/limit آیدی [مدت]</code> (بدون مدت = دائمی)\n<code>/unlimit آیدی</code>\n"
-            "<code>/newcode</code> · <code>/codes</code>\n<code>/settrial روز</code> · <code>/setcard متن</code>\n"
+            "<code>/newcode</code> · <code>/codes</code>\n<code>/pro آیدی [مدت]</code> · <code>/unpro آیدی</code> · <code>/pros</code>\n<code>/settrial روز</code> · <code>/setcard متن</code>\n"
             "<code>/setofficial</code> (داخل گپ رسمی) · <code>/unsetofficial</code>")
 
 
@@ -1345,7 +1345,9 @@ def eco_admin_markup(styled=True):
                [B("✅ رفع محدودیت", "success", callback_data="ad:unlim"),
                 B("🎁 ساخت کد هدیه", "primary", callback_data="ad:gc")],
                [B("📋 کدهای هدیه", "primary", callback_data="ad:codes"),
-                B("📊 بروزرسانی", "primary", callback_data="ad:stats")]], styled)
+                B("📊 بروزرسانی", "primary", callback_data="ad:stats")],
+               [B("🏹 فعال‌سازی پرو", "success", callback_data="ad:pro"),
+                B("❌ لغو پرو", "danger", callback_data="ad:unpro")]], styled)
 
 
 async def do_gems(chat_id, uid, n, sign=1):
@@ -1400,6 +1402,27 @@ async def do_unlimit(chat_id, uid):
         await send(chat_id, "این کاربر محدودیتی ندارد.")
 
 
+async def do_pro(chat_id, admin_id, uid, seconds):
+    if int(admin_id) != int(G.get("ROOT_ADMIN", 0)):
+        return await send(chat_id, "⛔ فقط ادمین اصلی می‌تواند اشتراک پرو بدهد.")
+    if not await need_started(chat_id, uid):
+        return
+    until = eco().pro_grant(uid, seconds if seconds else None, admin_id)
+    await send(chat_id, f"🏹 پرو فعال شد برای {uid} ({fmt_until(until)}).")
+    await notify(uid, title("اشتراک پرو فعال شد", "🏹") + "\n\n" + kv("مدت", fmt_until(until)) + "\n\n"
+                 "حالا «پیو پیو» از منوی دسترسی سریع (`.پنل`) و مینی‌اپ برایت باز است.")
+
+
+async def do_unpro(chat_id, admin_id, uid):
+    if int(admin_id) != int(G.get("ROOT_ADMIN", 0)):
+        return await send(chat_id, "⛔ فقط ادمین اصلی می‌تواند اشتراک پرو را لغو کند.")
+    if eco().pro_revoke(uid):
+        await send(chat_id, f"❌ پرو {uid} لغو شد.")
+        await notify(uid, "اشتراک پرو شما لغو شد.")
+    else:
+        await send(chat_id, "این کاربر پرو نیست.")
+
+
 async def cmd_eco_admin(client, message):
     if not is_admin(message.from_user.id):
         return
@@ -1420,7 +1443,9 @@ async def cb_admin(client, cb):
                    "sub": ("subgems", "بفرست: <code>آیدی تعداد</code>  مثل <code>123456 200</code>"),
                    "days": ("adddays", "بفرست: <code>آیدی روز</code>  مثل <code>123456 30</code>"),
                    "lim": ("limit", "بفرست: <code>آیدی مدت</code>  مثل <code>123456 7 روز</code>\nبدون مدت = محدودیت دائمی."),
-                   "unlim": ("unlimit", "آیدی کاربر را بفرست.")}
+                   "unlim": ("unlimit", "آیدی کاربر را بفرست."),
+                   "pro": ("pro", "بفرست: <code>آیدی مدت</code>  مثل <code>123456 30 روز</code>\nبدون مدت = پرو دائمی. (فقط ادمین اصلی)"),
+                   "unpro": ("unpro", "آیدی کاربر را بفرست. (فقط ادمین اصلی)")}
         if act == "stats":
             await edit(chat_id, cb.message.id, eco_admin_text(), eco_admin_markup)
         elif act in prompts:
@@ -1475,6 +1500,17 @@ async def admin_commands(client, message):
             await do_limit(chat.id, u.id, int(args[0]), dur)
         elif cmd == "unlimit":
             await do_unlimit(chat.id, int(args[0]))
+        elif cmd == "pro":
+            dur = parse_duration(" ".join(args[1:])) if len(args) > 1 else 0
+            if dur is None:
+                return await send(chat.id, "مدت نامعتبر است؛ مثل <code>30 روز</code> (بدون مدت = دائمی).")
+            await do_pro(chat.id, u.id, int(args[0]), dur)
+        elif cmd == "unpro":
+            await do_unpro(chat.id, u.id, int(args[0]))
+        elif cmd == "pros":
+            rows = e.pro_list()
+            await send(chat.id, title("کاربران پرو", "🏹") + "\n\n" + ("\n".join(
+                f"◈ <code>{r['uid']}</code> ⟢ {fmt_until(r['until'])}" for r in rows) or "هنوز کسی پرو نیست."))
         elif cmd == "settrial":
             e.set_setting("trial_days", int(args[0]))
             await send(chat.id, f"✅ هدیه‌ی شروع: {fa(int(args[0]))} روز")
@@ -1559,6 +1595,18 @@ async def on_state_text(client, message):
             uid = int(text)
             STATE.pop(u.id, None)
             await do_unlimit(chat_id, uid)
+        elif k == "pro":
+            parts = text.split(maxsplit=1)
+            dur = parse_duration(parts[1]) if len(parts) > 1 else 0
+            if dur is None:
+                await send(chat_id, "مدت نامعتبر است؛ مثل <code>30 روز</code>. دوباره بفرست یا «لغو».")
+                return message.stop_propagation()
+            STATE.pop(u.id, None)
+            await do_pro(chat_id, u.id, int(parts[0]), dur)
+        elif k == "unpro":
+            uid = int(text)
+            STATE.pop(u.id, None)
+            await do_unpro(chat_id, u.id, uid)
         elif k == "gc":
             step = st["step"]
             key = GC_STEPS[step][0]
@@ -1783,43 +1831,112 @@ def start_background():
     return asyncio.create_task(background())
 
 
-# =========================================================== quick access menu
-# (short label for the 3-per-row grid, full title, [(item label, help-section key or "@tab", panel tab or None)])
+# =========================================================== quick access menu (v3)
+# (emoji, short label for the 3-per-row grid, full title, [(item label, help key)])
 QA_CATS = [
     ("👤", "پروفایل", "پروفایل و ظاهر", [
-        ("⏰ ساعت", "datetime", "prof"), ("🪪 پروفایل", "profile", "prof"), ("🖼 آواتار", "avatar", "prof"),
-        ("🎨 لوگو", "logo", None), ("✨ افکت", "fun", None)]),
+        ("⏰ ساعت", "datetime"), ("🪪 پروفایل", "profile"), ("🖼 آواتار", "avatar"),
+        ("🎨 لوگو", "logo"), ("✨ افکت", "fun")]),
     ("💬", "پیام", "پیام و تعامل", [
-        ("🗂 منشی", "secretary", "smart"), ("😍 ری‌اکشن", "react", None), ("🥇 کامنت اول", "firstcomment", None),
-        ("⭐ پریمیوم", "pemoji", "text"), ("↩️ ریپلای", "reply", None), ("🎯 لیست‌ها", "lists", "target"),
-        ("⏱ زمان‌دار", "timed", None)]),
+        ("🅱️ قالب متن", "textstyle"), ("🗂 منشی", "secretary"), ("😍 ری‌اکشن", "react"),
+        ("🥇 کامنت اول", "firstcomment"), ("⭐ پریمیوم", "pemoji"), ("↩️ ریپلای", "reply"),
+        ("🎯 لیست‌ها", "lists"), ("⏱ زمان‌دار", "timed")]),
     ("🛡", "امنیت", "امنیت و مدیریت", [
-        ("🔒 پیوی", "security", "shield"), ("🚫 فیلتر", "wordfilter", "smart"), ("🔗 عضویت", "fjoin", "smart"),
-        ("👥 گروه", "group", None), ("🧹 پاکسازی", "cleanexit", None), ("🏗 ساخت", "create", None),
-        ("🔐 رمز", "crypto", None), ("💾 بکاپ", "backup", None)]),
+        ("🔒 پیوی", "security"), ("🗑 ضد حذف", "antidel"), ("🚫 فیلتر", "wordfilter"),
+        ("🔗 عضویت", "fjoin"), ("👥 گروه", "group"), ("🧹 پاکسازی", "cleanexit"),
+        ("🏗 ساخت", "create"), ("🔐 رمز", "crypto"), ("💾 بکاپ", "backup")]),
     ("🔎", "رسانه", "سرچ و رسانه", [
-        ("🔍 جستجو", "media", None), ("⬇️ دانلود", "downloader", None), ("🎵 آهنگ", "music", None),
-        ("📥 سیو", "privatechan", None), ("🎞 رسانه", "toolsmedia", None), ("🖼 متادیتا", "imgmeta", None),
-        ("🌐 اینترنت", "tools2", None)]),
+        ("🔍 جستجو", "media"), ("⬇️ دانلود", "downloader"), ("🎵 آهنگ", "music"),
+        ("📥 سیو", "privatechan"), ("🎞 رسانه", "toolsmedia"), ("🖼 متادیتا", "imgmeta"),
+        ("🌐 اینترنت", "tools2")]),
     ("🧠", "هوش", "هوش و ترجمه", [
-        ("🤖 هوش", "ai", None), ("🧠 پیشرفته", "aiplus", None), ("🧩 ابزار هوش", "toolsai", None),
-        ("🌐 ترجمه", "@tab", "lang")]),
+        ("🤖 هوش", "ai"), ("🧠 پیشرفته", "aiplus"), ("🧩 ابزار هوش", "toolsai"), ("🌐 ترجمه", "translate")]),
     ("📣", "تبچی", "تبچی و خودکار", [
-        ("📣 تبچی", "tabchi", "tab"), ("🔁 خودکار", "selfloop", None), ("📡 حضور", "@tab", "pres")]),
+        ("📣 تبچی", "tabchi"), ("🔁 خودکار", "selfloop"), ("📡 حضور", "pres")]),
     ("🧰", "ابزار", "ابزارها", [
-        ("📚 اصلی", "main", None), ("🧮 ریاضی", "toolsmath", None), ("🔑 رمز", "toolshash", None),
-        ("🕒 زمان", "toolstime", None), ("ℹ️ اطلاعات", "toolsinfo", None), ("💵 ارز", "rate", None),
-        ("👛 کیف پول", "wallet", None), ("🎛 کنترل", "panel", None), ("🛠 ابزارها", "tools", None)]),
+        ("📚 اصلی", "main"), ("🧮 ریاضی", "toolsmath"), ("🔑 رمز", "toolshash"),
+        ("🕒 زمان", "toolstime"), ("ℹ️ اطلاعات", "toolsinfo"), ("💵 ارز", "rate"),
+        ("👛 کیف پول", "wallet"), ("🎛 کنترل", "panel"), ("🛠 ابزارها", "tools"), ("🛰 رادار", "radar")]),
     ("🎮", "سرگرمی", "سرگرمی و الماس", [
-        ("🎲 بازی", "cheat", None), ("🐱 میو", "meowgame", None), ("🌾 فارم", "farm", None),
-        ("⭕ دوز", "ttt", None), ("💎 الماس", "diamond", None)]),
+        ("🎲 بازی", "cheat"), ("🐱 میو", "meowgame"), ("🌾 فارم", "farm"),
+        ("⭕ دوز", "ttt"), ("💎 الماس", "diamond")]),
 ]
+PP_GI = len(QA_CATS)                      # the PewPew (PRO) category sits after the regular ones
+
+# help key -> [(setting key in miniapp_api.T/CYC, button label)]
+QA_TOGGLES = {
+    "datetime": [("clock", "ساعت پروفایل"), ("bio_clock", "ساعت بیو"), ("bio_date", "تاریخ بیو"), ("bio_date_type", "تقویم")],
+    "profile": [("font", "استایل نام"), ("bio_font", "استایل بیو"), ("panel_color", "پنل رنگی"), ("help_color", "راهنمای رنگی")],
+    "avatar": [("avatar", "آواتار زنده")],
+    "textstyle": [("bold", "بولد"), ("spoiler", "اسپویلر"), ("code", "نقل و قول"), ("underline", "زیرخط"),
+                  ("gradual", "تدریجی"), ("dot_commands", "دستور با نقطه")],
+    "secretary": [("secretary", "منشی خودکار")],
+    "firstcomment": [("first_comment", "کامنت اول")],
+    "pemoji": [("pemoji", "ایموجی پریمیوم")],
+    "lists": [("enemy_active", "دشمن"), ("friend_active", "دوست"), ("crash_active", "کراش")],
+    "timed": [("self_destruct", "پیام پاک‌شونده")],
+    "security": [("pv_lock", "قفل کامل"), ("pv_photo", "عکس"), ("pv_video", "ویدیو"), ("pv_gif", "گیف"),
+                 ("pv_voice", "ویس"), ("pv_music", "آهنگ"), ("pv_sticker", "استیکر"), ("pv_loc", "لوکیشن"),
+                 ("pv_emo", "ایموجی"), ("pv_txt", "متن")],
+    "antidel": [("anti_delete", "ضد دیلیت"), ("anti_edit", "ضد ادیت"), ("tag_alert", "هشدار تگ"),
+                ("auto_seen", "سین خودکار"), ("auto_save", "ذخیره تایم‌دار")],
+    "wordfilter": [("filter_words_active", "فیلتر کلمات")],
+    "fjoin": [("forced_join_active", "عضویت اجباری")],
+    "pres": [("typing", "تایپینگ"), ("playing", "در حال بازی"), ("upload_photo", "ارسال عکس"),
+             ("record_voice", "ضبط ویس"), ("watch_gif", "تماشای گیف")],
+    "tabchi": [("tabchi_pv", "پیوی"), ("tabchi_gp", "گروه"), ("tabchi_smart", "هوشمند"), ("tabchi_speed", "سرعت")],
+    "ai": [("ai_stream", "نمایش زنده"), ("ai_search", "جستجو"), ("ai_footer", "پانوشت"), ("ai_auto", "پاسخ خودکار")],
+}
+TRANSLATE_CHOICES = [("en", "English"), ("ru", "Русский"), ("zh-CN", "中文"), ("off", "خاموش")]
+
+EXTRA_HELP = {
+    "textstyle": "**‹ ʀɪᴠᴀʟ ›  قالب متن**\n\n"
+                 "پیام‌هایی که از اکانتت می‌فرستی خودکار قالب می‌گیرند؛ لازم نیست هر بار چیزی بنویسی.\n\n"
+                 "◈ `بولد` ⟢ همه‌ی پیام‌ها پررنگ\n◈ `اسپویلر` ⟢ متن مخفی تا لمس\n◈ `نقل و قول` ⟢ قالب کد\n"
+                 "◈ `زیرخط` ⟢ زیرخط‌دار\n◈ `تدریجی` ⟢ متن حرف‌به‌حرف تایپ می‌شود\n\n"
+                 "**نکته:** بولد، اسپویلر، نقل و قول، زیرخط و تدریجی هم‌زمان کار نمی‌کنند؛ روشن کردن یکی دیگری را خاموش می‌کند.\n"
+                 "◈ `دستور با نقطه` ⟢ دستورها باید با نقطه نوشته شوند (مثل `.پنل`).",
+    "antidel": "**‹ ʀɪᴠᴀʟ ›  ضد حذف و هشدارها**\n\n"
+               "◈ `ضد دیلیت` ⟢ پیام‌هایی که طرف مقابل پاک می‌کند در پیام‌های ذخیره‌شده‌ات می‌ماند\n"
+               "◈ `ضد ادیت` ⟢ متن قبل از ویرایش را نگه می‌دارد\n"
+               "◈ `هشدار تگ` ⟢ وقتی در گروه‌ها منشنت کنند خبرت می‌کند\n"
+               "◈ `سین خودکار` ⟢ پیام‌های پیوی خودکار خوانده می‌شوند\n"
+               "◈ `ذخیره تایم‌دار` ⟢ عکس و ویدیوی یک‌بارمصرف در ذخیره‌شده‌ها می‌ماند",
+    "pres": "**‹ ʀɪᴠᴀʟ ›  حضور و فعالیت**\n\n"
+            "وضعیتی که دیگران هنگام آنلاین بودنت می‌بینند را عوض می‌کند. فقط یکی از این‌ها هم‌زمان فعال است.\n\n"
+            "◈ `تایپینگ` ⟢ «در حال تایپ…»\n◈ `در حال بازی` ⟢ «در حال بازی»\n◈ `ارسال عکس` ⟢ «در حال ارسال عکس»\n"
+            "◈ `ضبط ویس` ⟢ «در حال ضبط ویس»\n◈ `تماشای گیف` ⟢ «در حال دیدن گیف»",
+    "translate": "**‹ ʀɪᴠᴀʟ ›  ترجمه‌ی خودکار**\n\n"
+                 "◈ با انتخاب یک زبان پایین، همه‌ی پیام‌هایی که می‌فرستی خودکار به آن زبان ترجمه می‌شوند.\n"
+                 "◈ `.ترجمه` روی پیام دیگران (ریپلای) ⟢ ترجمه‌ی همان پیام\n"
+                 "◈ «خاموش» ترجمه‌ی خودکار را قطع می‌کند.",
+    "radar": "**‹ ʀɪᴠᴀʟ ›  رادار**\n\n"
+             "◈ `.رادار` (ریپلای یا `@یوزرنیم`) ⟢ گزارش کامل هویت، دیتاسنتر، گروه‌های مشترک و سابقه‌ی نام\n"
+             "◈ `.کلون` (ریپلای) ⟢ کپی نام، بیو و عکس آن کاربر روی اکانتت\n"
+             "◈ `.بازگردانی کامل` ⟢ برگشت به هویت اصلی\n"
+             "◈ `.شکارچی` (ریپلای) ⟢ ثبت در رادار؛ هر تغییر نام، یوزرنیم، بیو یا عکس به Saved Messages می‌آید\n"
+             "◈ `.شکارچی لیست` · `.شکارچی حذف` · `.شکارچی حذف همه`\n"
+             "◈ `.آنالیز` ⟢ آنالیز گروه (پیام‌ها، ادمین‌ها، ربات‌ها)\n\n"
+             "**توجه:** تلگرام اینکه چه کسی پروفایلت را دیده نشان نمی‌دهد؛ شماره‌ی مخفی هم مخفی می‌ماند.",
+}
+
+PP_GUIDE = ("**‹ ʀɪᴠᴀʟ ›  🏹 پیو پیو**\n\n"
+            "**راه‌اندازی** (داخل خود گروه و با دستور از اکانت سلف):\n"
+            "◈ `.پیو شکار روشن 5m-7m` ⟢ هر ۵ تا ۷ دقیقه (تصادفی) «پیو پیو» می‌فرستد\n"
+            "◈ `.پیو فید روشن 30m-35m` ⟢ هر ۳۰ تا ۳۵ دقیقه 🥩 می‌فرستد\n"
+            "◈ `.پیو آرت روشن` ⟢ هر آرت جدید را فوری با `/art` می‌گیرد\n"
+            "◈ `.شلیک` روی پیام هدف (ریپلای) ⟢ هدف ثبت می‌شود و هر ۳۰ ثانیه تا کیل شلیک می‌کند\n"
+            "◈ `.شلیک لیست` · `.شلیک حذف` · `.پیو دور 3` · `.پیو انتظار 10m`\n"
+            "◈ `.پیو پاک روشن 1s` ⟢ پیام شلیک بعد از جواب ربات پاک شود\n"
+            "◈ `.پیو توقف` ⟢ توقف اضطراری\n\n"
+            "دکمه‌های زیر تنظیمات همین گپ‌هاست.")
+PP_KEYS = {"h": "hunt", "f": "feed", "a": "art", "k": "kill", "s": "del_shot", "b": "del_bot"}
 QA_PATTERN = (3, 3, 1, 3, 3)          # buttons per row on every page
 QA_PER_PAGE = sum(QA_PATTERN)
 
 
 def qa_grid(buttons, page, nav_cb):
-    """Lay buttons out as 3-3-1-3-3 per page; adds ⏪ ⏩ when there is more than one page."""
+    """Lay buttons out as 3-3-1-3-3 per page; adds ⏪/⏩ when there is more than one page."""
     start = page * QA_PER_PAGE
     chunk = buttons[start:start + QA_PER_PAGE]
     rows, i = [], 0
@@ -1845,6 +1962,32 @@ def _h(text: str) -> str:
         return esc(text)
 
 
+def pro_ok(uid) -> bool:
+    try:
+        return int(uid) == int(G.get("ROOT_ADMIN", 0)) or eco().is_pro(int(uid))
+    except Exception:
+        return False
+
+
+def _settings(uid) -> dict:
+    fn = G.get("_rv_settings")
+    if fn:
+        return fn(uid)
+    try:
+        import miniapp_api
+        return miniapp_api._settings(G, uid)
+    except Exception:
+        return {}
+
+
+async def _apply_toggle(uid, key, val=None):
+    fn = G.get("_rv_toggle")
+    if fn:
+        return await fn(uid, key, val)
+    import miniapp_api
+    return await miniapp_api.apply_toggle(G, uid, key, val)
+
+
 def panel_home_markup(uid):
     bot = G.get("BOT_USERNAME") or ""
 
@@ -1862,10 +2005,13 @@ def panel_home_text(uid) -> str:
 def qa_home_view(uid, page=0):
     btns = [B(f"{sym} {short}", "success", callback_data=f"qa:cat:{uid}:{gi}:0")
             for gi, (sym, short, _full, _it) in enumerate(QA_CATS)]
+    if pro_ok(uid):
+        btns.append(B("🏹 پیو پیو", "success", callback_data=f"qa:pp:{uid}:0"))
+    else:
+        btns.append(B("🔒 پیو پیو", "danger", callback_data=f"qa:lock:{uid}"))
     rows = qa_grid(btns, page, lambda p: f"qa:home:{uid}:{p}")
-    rows.append([B("🎛 پنل تنظیمات", "primary", callback_data=f"pt_prof_{uid}")])
     rows.append([B("↩️ برگشت", "danger", callback_data=f"qa:panel:{uid}")])
-    names = "\n".join(f"◈ {sym} {full}" for sym, _s, full, _i in QA_CATS)
+    names = "\n".join(f"◈ {sym} {full}" for sym, _s, full, _i in QA_CATS) + "\n◈ 🏹 پیو پیو (ویژه‌ی پرو)"
     text = ("<b>‹ ʀɪᴠᴀʟ ›  دسترسی سریع</b>\n\nهمه‌ی قابلیت‌ها در بخش‌های زیر مرتب شده‌اند:\n\n"
             f"{names}\n\nیک بخش را انتخاب کن.")
     return text, rows
@@ -1873,28 +2019,91 @@ def qa_home_view(uid, page=0):
 
 def qa_cat_view(uid, gi, page=0):
     sym, _short, full, items = QA_CATS[gi]
-    btns = []
-    for idx, (label, key, tab) in enumerate(items):
-        if key == "@tab":
-            btns.append(B(label, "primary", callback_data=f"pt_{tab}_{uid}"))
-        else:
-            btns.append(B(label, "primary", callback_data=f"qa:item:{uid}:{gi}:{idx}"))
+    btns = [B(label, "primary", callback_data=f"qa:item:{uid}:{gi}:{idx}") for idx, (label, _k) in enumerate(items)]
     rows = qa_grid(btns, page, lambda p: f"qa:cat:{uid}:{gi}:{p}")
     rows.append([B("↩️ برگشت", "danger", callback_data=f"qa:home:{uid}")])
     text = f"<b>‹ ʀɪᴠᴀʟ ›  {esc(full)}</b>\n\n{sym} {len(items)} بخش؛ یکی را انتخاب کن."
     return text, rows
 
 
-def qa_item_view(uid, gi, idx):
-    _sym, _short, _full, items = QA_CATS[gi]
-    label, key, tab = items[idx]
+def _help_html(key, label) -> str:
     sec = (G.get("HELP_SECTIONS") or {}).get(key)
-    text = _h(sec["text"]) if sec else f"<b>{esc(label)}</b>\n\nراهنمای این بخش هنوز آماده نیست."
+    if sec:
+        return _h(sec["text"])
+    if key in EXTRA_HELP:
+        return _h(EXTRA_HELP[key])
+    return f"<b>{esc(label)}</b>\n\nراهنمای این بخش هنوز آماده نیست."
+
+
+def qa_item_view(uid, gi, idx):
+    """Full usage guide + every setting button of that section (changes apply in place)."""
+    _sym, _short, _full, items = QA_CATS[gi]
+    label, key = items[idx]
+    text = _help_html(key, label)
+    st = _settings(uid)
     rows = []
-    if tab:
-        rows.append([B("🎛 تنظیمات این بخش", "primary", callback_data=f"pt_{tab}_{uid}")])
+    if key == "translate":
+        cur = st.get("translate") or "off"
+        rows.append([B(("🟢 " if cur == v else "") + name, "success" if cur == v else "primary",
+                       callback_data=f"qa:tr:{uid}:{gi}:{idx}:{v}") for v, name in TRANSLATE_CHOICES])
+    else:
+        btns = []
+        for n, (sk, lb) in enumerate(QA_TOGGLES.get(key, [])):
+            if sk.startswith("ai_") and sk not in st:
+                continue
+            v = st.get(sk)
+            if isinstance(v, bool) or v is None and sk not in ("font", "bio_font", "bio_date_type", "tabchi_speed"):
+                btns.append(B(("🟢 " if v else "⚫ ") + lb, "success" if v else "primary", callback_data=f"qa:tg:{uid}:{gi}:{idx}:{n}"))
+            else:
+                btns.append(B(f"{lb}: {v}", "primary", callback_data=f"qa:tg:{uid}:{gi}:{idx}:{n}"))
+        rows += qa_grid(btns, 0, lambda p: "noop")
+    if QA_TOGGLES.get(key) or key == "translate":
+        try:
+            running = uid in G["ACTIVE_BOTS"]
+        except Exception:
+            running = True
+        if not running:
+            text += "\n\n⚠️ سلف روشن نیست؛ برای تغییر تنظیمات اول فعالش کن."
     rows.append([B("↩️ برگشت", "danger", callback_data=f"qa:cat:{uid}:{gi}:0")])
     return text[:4000], rows
+
+
+def qa_pp_view(uid, page=0):
+    from self_tools import pewpew
+    st = pewpew.api_state(G, uid)
+    chats = st["chats"]
+    per = 3
+    pages = max(1, -(-len(chats) // per))
+    page = max(0, min(page, pages - 1))
+    rows = [[B("▶️ ادامه" if st["stop"] else "🛑 توقف اضطراری", "success" if st["stop"] else "danger",
+               callback_data=f"qa:ppa:{uid}:{'resume' if st['stop'] else 'stop'}")]]
+    dot = lambda b: "🟢 " if b else "⚫ "
+    lines = []
+    for ci in range(page * per, min(len(chats), (page + 1) * per)):
+        c = chats[ci]
+        k = c["kill"]
+        alive = sum(1 for t in c["targets"] if t["state"] == "active")
+        rows.append([B(f"📍 {c['title'][:24]}", "primary", callback_data="noop")])
+        rows.append([B(dot(c["hunt"]["on"]) + "🎯 شکار", "success" if c["hunt"]["on"] else "primary", callback_data=f"qa:pt:{uid}:{page}:{ci}:h"),
+                     B(dot(c["feed"]["on"]) + "🥩 فید", "success" if c["feed"]["on"] else "primary", callback_data=f"qa:pt:{uid}:{page}:{ci}:f"),
+                     B(dot(c["art"]["on"]) + "🎨 آرت", "success" if c["art"]["on"] else "primary", callback_data=f"qa:pt:{uid}:{page}:{ci}:a")])
+        rows.append([B(dot(k["on"]) + "🔫 کیل", "success" if k["on"] else "primary", callback_data=f"qa:pt:{uid}:{page}:{ci}:k"),
+                     B(dot(k["del_shot"]) + "🧹 حذف شلیک", "success" if k["del_shot"] else "primary", callback_data=f"qa:pt:{uid}:{page}:{ci}:s"),
+                     B(dot(k["del_bot"]) + "🗑 حذف پاسخ", "success" if k["del_bot"] else "primary", callback_data=f"qa:pt:{uid}:{page}:{ci}:b")])
+        wait = "خودکار" if not k["wait"] else f"{int(k['wait'] // 60)}m"
+        lines.append(f"◈ {esc(c['title'])} ⟢ {alive}/{len(c['targets'])} هدف · دور {k['rounds'] or '∞'} · انتظار {wait}")
+    if pages > 1:
+        nav = []
+        if page > 0:
+            nav.append(B("⏪", "primary", callback_data=f"qa:pp:{uid}:{page - 1}"))
+        if page < pages - 1:
+            nav.append(B("⏩", "primary", callback_data=f"qa:pp:{uid}:{page + 1}"))
+        rows.append(nav)
+    rows.append([B("↩️ برگشت", "danger", callback_data=f"qa:home:{uid}")])
+    body = "\n".join(lines) if lines else "هنوز گپی تنظیم نشده؛ داخل گروه `.پیو شکار روشن` را بزن."
+    head = _h(PP_GUIDE)
+    state = "\n\n⛔ <b>متوقف است</b>" if st["stop"] else ""
+    return (head + "\n\n" + _h(body) + state)[:4000], rows
 
 
 async def edit_inline(cb, text, rows):
@@ -1917,18 +2126,54 @@ async def cb_qa(client, cb):
         uid = int(p[2])
         if cb.from_user.id != uid and cb.from_user.id != int(G.get("ROOT_ADMIN", 0)):
             return await cb.answer("این پنل مال خودت نیست.", show_alert=True)
-        await cb.answer()
         act = p[1]
-        if act == "panel":
-            return await edit_inline(cb, panel_home_text(uid), panel_home_markup(uid)(True)["inline_keyboard"])
-        if act == "home":
-            text, rows = qa_home_view(uid, int(p[3]) if len(p) > 3 else 0)
-        elif act == "cat":
-            text, rows = qa_cat_view(uid, int(p[3]), int(p[4]) if len(p) > 4 else 0)
-        elif act == "item":
-            text, rows = qa_item_view(uid, int(p[3]), int(p[4]))
+        if act == "lock":
+            return await cb.answer("🔒 پیو پیو ویژه‌ی کاربران پرو است.\nباید از طریق ادمین اشتراک پرو فعال کنی.", show_alert=True)
+        if act in ("pp", "pt", "ppa") and not pro_ok(uid):
+            return await cb.answer("🔒 باید از طریق ادمین اشتراک پرو فعال کنی.", show_alert=True)
+        if act == "tg":
+            gi, idx, n = int(p[3]), int(p[4]), int(p[5])
+            skey = QA_TOGGLES[QA_CATS[gi][3][idx][1]][n][0]
+            ok, err, _s = await _apply_toggle(uid, skey)
+            if not ok:
+                return await cb.answer(err or "انجام نشد", show_alert=True)
+            await cb.answer()
+            text, rows = qa_item_view(uid, gi, idx)
+        elif act == "tr":
+            gi, idx, val = int(p[3]), int(p[4]), p[5]
+            ok, err, _s = await _apply_toggle(uid, "translate", val)
+            if not ok:
+                return await cb.answer(err or "انجام نشد", show_alert=True)
+            await cb.answer()
+            text, rows = qa_item_view(uid, gi, idx)
+        elif act == "pt":
+            from self_tools import pewpew
+            page, ci, k = int(p[3]), int(p[4]), p[5]
+            chats = pewpew.api_state(G, uid)["chats"]
+            if ci >= len(chats) or k not in PP_KEYS:
+                return await cb.answer("گپ پیدا نشد.", show_alert=True)
+            pewpew.toggle_flag(G, uid, chats[ci]["id"], PP_KEYS[k])
+            await cb.answer()
+            text, rows = qa_pp_view(uid, page)
+        elif act == "ppa":
+            from self_tools import pewpew
+            pewpew.api_op(G, uid, {"op": p[3]})
+            await cb.answer("انجام شد")
+            text, rows = qa_pp_view(uid, 0)
         else:
-            return
+            await cb.answer()
+            if act == "panel":
+                return await edit_inline(cb, panel_home_text(uid), panel_home_markup(uid)(True)["inline_keyboard"])
+            if act == "home":
+                text, rows = qa_home_view(uid, int(p[3]) if len(p) > 3 else 0)
+            elif act == "cat":
+                text, rows = qa_cat_view(uid, int(p[3]), int(p[4]) if len(p) > 4 else 0)
+            elif act == "item":
+                text, rows = qa_item_view(uid, int(p[3]), int(p[4]))
+            elif act == "pp":
+                text, rows = qa_pp_view(uid, int(p[3]) if len(p) > 3 else 0)
+            else:
+                return
         await edit_inline(cb, text, rows)
     except Exception as e:
         log.exception("quick access: %s", e)
@@ -2062,7 +2307,8 @@ def install(g: dict):
     reg_msg(cmd_eco_admin, PRIV & filters.regex(r"^💎 اقتصاد$"), -13)
     reg_msg(cmd_user_menu, PRIV & filters.regex(r"^🔙 منوی کاربری$"), -13)
     reg_msg(admin_commands, filters.command(["addgems", "subgems", "adddays", "limit", "unlimit", "settrial",
-                                             "setcard", "setofficial", "unsetofficial", "economy", "newcode", "codes"]), -13)
+                                             "setcard", "setofficial", "unsetofficial", "economy", "newcode", "codes",
+                                             "pro", "unpro", "pros"]), -13)
     reg_msg(on_restore_doc, PRIV & filters.document, -13)
     reg_msg(on_state_text, PRIV & filters.text, -12)
     reg_msg(on_receipt, PRIV & (filters.photo | filters.document), -12)

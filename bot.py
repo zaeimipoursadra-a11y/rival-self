@@ -9046,7 +9046,7 @@ async def source_controller (client ,message ):
 
 AI_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 AI_ENDPOINT = "https://text.pollinations.ai/"
-AI_KEY = ""
+AI_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 AI_KEY_URL = "https://api.groq.com/openai/v1/chat/completions"
 AI_KEY_MODEL = "llama-3.3-70b-versatile"
 AI_PERSONA = ("تو دستیار هوشمند فارسی‌زبان هستی. کوتاه، دقیق و خودمونی جواب بده. "
@@ -9107,9 +9107,20 @@ async def _ai_keyed (prompt ):
         data =json .loads (await r .text ())
     return (((data .get ("choices")or [{}])[0 ].get ("message")or {}).get ("content")or "").strip ()
 
+AI_AD_RE =re .compile (
+r"(lifetime\s+access|cheapest\s+price|buy\s+lifetime|fastest\s+gpt|best\s+gpt\s+bot|\bpm\s*:\s*@|contact\s*:\s*@|"
+r"for\s+buy\b|premium\s+gpt|خرید\s+اشتراک|اشتراک\s+ویژه|پیام\s+بده\s+به\s+@|join\s+(?:our|my)\s+channel)",re .I )
+
+def _ai_strip_ads (txt ):
+    """Drop advertisement lines that third-party GPT bots append to (or return instead of) an answer."""
+    lines =[l for l in (txt or "").split ("\n")if not AI_AD_RE .search (l )]
+    return "\n".join (lines ).strip ()
+
 def _ai_is_junk (txt ):
     low =(txt or "").strip ().lower ()
     if len (low )<8 :
+        return True
+    if AI_AD_RE .search (low )and len (_ai_strip_ads (low ))<12 :
         return True
     return any (bad in low for bad in AI_JUNK )
 
@@ -9167,8 +9178,8 @@ async def _ai_inline (client ,question ):
             logger .info ("ai: inline %s failed (%s)",bot ,type (exc ).__name__ )
             continue
         for r in (getattr (res ,"results",None )or [])[:3 ]:
-            txt =_ai_result_text (r ).strip ()
-            if len (txt )>12 :
+            txt =_ai_strip_ads (_ai_result_text (r ).strip ())
+            if len (txt )>12 and not _ai_is_junk (txt ):
                 logger .info ("ai: answered by inline @%s",bot )
                 return txt
         logger .info ("ai: inline %s gave nothing",bot )
@@ -9260,25 +9271,23 @@ async def ai_controller (client ,message ):
     status =await safe_edit_message (message ,"**◈ در حال فکر کردن...**")
     target =status or message
     answer =""
-    try :
-        answer =await _ai_g4f (uid ,chat_id ,question )
-    except Exception as exc :
-        logger .info ("ai: g4f layer error (%s)",type (exc ).__name__ )
-    if not answer and AI_KEY :
+    layers =[]
+    if AI_KEY :
+        layers .append (("groq",lambda :_ai_ask (_ai_prompt (uid ,chat_id ,question ))))
+    layers .append (("g4f",lambda :_ai_g4f (uid ,chat_id ,question )))
+    layers .append (("pm",lambda :_ai_pm (client ,question )))
+    layers .append (("inline",lambda :_ai_inline (client ,question )))
+    for _lname ,_lfn in layers :
         try :
-            answer =await _ai_ask (_ai_prompt (uid ,chat_id ,question ))
+            _ltxt =_ai_strip_ads (await _lfn ())
         except Exception as exc :
-            logger .info ("ai: key layer failed (%s)",str (exc )[:70 ])
-    if not answer :
-        try :
-            answer =await _ai_pm (client ,question )
-        except Exception as exc :
-            logger .info ("ai: pm layer error (%s)",type (exc ).__name__ )
-    if not answer :
-        try :
-            answer =await _ai_inline (client ,question )
-        except Exception as exc :
-            logger .info ("ai: inline layer error (%s)",type (exc ).__name__ )
+            logger .info ("ai: %s layer failed (%s)",_lname ,type (exc ).__name__ )
+            continue
+        if _ltxt and not _ai_is_junk (_ltxt ):
+            answer =_ltxt
+            break
+        if _ltxt :
+            logger .info ("ai: %s layer returned junk/ad",_lname )
     if not answer :
         return await safe_edit_message (target ,"**هوش مصنوعی جواب نداد، دوباره بزن.**")
     _ai_remember (uid ,chat_id ,question ,answer )

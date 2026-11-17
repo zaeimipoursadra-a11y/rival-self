@@ -1,6 +1,6 @@
 # PROJECT_STATE.md — SELF RIVAL
 
-> Handoff document for a new Claude conversation. Snapshot date: **2026-11-15** (v2.2 — see 0d; v2.1 — see 0c; v2: diamond economy; sections 0b and 15 describe what changed — older sections 1-14 are partly superseded).
+> Handoff document for a new Claude conversation. Snapshot date: **2026-11-15** (v3 — see 0e; v2.2 — see 0d; v2.1 — see 0c; v2: diamond economy; sections 0b and 15 describe what changed — older sections 1-14 are partly superseded).
 > Built by static inspection of the repository (zip `Myself--main`, later modified in the previous conversation). **Nothing was executed against Telegram** and **no Git history exists in the zip** (no `.git`), so "recent changes" below come from the previous conversation, not from commits.
 > Legend: ✅ verified in code · ⚠️ implemented but untested in production · ❓ unknown / needs investigation.
 > No secrets are recorded here (names of environment variables only).
@@ -60,6 +60,18 @@ Everything below is ✅ compiled and unit-tested offline (`tests/test_economy.py
 | Game guard | `Economy.active_game_of`: a user with an open table cannot open another (message + «🚫 لغو بازی قبلی» button) or join someone else's; players of a running game cannot start/join. |
 | Mini app v3 | new `miniapp/dashboard/app.html` (served at `/`; old dashboard at `/?legacy=1`). 4 tabs: داشبورد (hero, stats, category cards) · قابلیت‌ها (accordion categories → tiles; toggles via `/miniapp/set`; translate segmented) · الماس (balance, renew, referral, history, top-10) · حساب (info, links, admin stats + `g_fjoin`/`g_bot`). Uses existing endpoints `state`, `set`, `admin`, `eco`. Assets via `/assets/<name>` (whitelist), fonts via `/fonts/<name>`. Smoke-tested in node with a fake DOM (`/tmp`-style script, not shipped). |
 | Not possible | «فضولی‌ها» (who viewed my profile): Telegram exposes no such data to any client/bot API, so it was not built. |
+
+
+## 0e. v3 changes — ✅ unit/smoke-tested offline (fake Pyrogram client), ⚠️ never run on Telegram or against the real PewPew bots
+| Area | Now |
+|---|---|
+| PRO | table `pro` in `economy.db` (`pro_grant/pro_revoke/pro_until/is_pro/pro_list`). **Only ROOT_ADMIN** grants it: `/pro id [duration]`, `/unpro id`, `/pros`, admin-panel buttons. ROOT is always PRO. Non-PRO sees a red 🔒 «پیو پیو» button («باید از طریق ادمین اشتراک پرو فعال کنی»). |
+| PewPew (`self_tools/pewpew.py`) | per-user config in `data_manager.users[uid]["pewpew"]` (chats → hunt/feed/art/kill + targets). One engine task per self (started from `resume`, waits for `client.me` + `ACTIVE_BOTS`). **Hunt** «پیو پیو» every random 5–7 min, **feed** 🥩 every 30–35 min (jittered, spans configurable). **Kill**: `.شلیک` (reply) registers a target; shots every `cooldown` (30 s, shared by all shots/targets, only ROOT edits it) round-robin; bot answers parsed by `parse_game_reply` (kill / alive / cooldown / self-dead / target-dead / left-group / other-room); after a kill waits `wait` (0 = from the bot text) then shoots again, `rounds` kills per target (0 = endless); left-group/other-room/no-answer ⇒ target switched off + note to Saved Messages; optional deletion of our shot (after the answer) and of the bot's reply. **Art**: any message from a game bot containing «آرت» + `/art` ⇒ instant `/art` reply (+ optional delete). Game bots: PewPewieBot, PewPewieIVBot, PewPewie3Bot, PewPewie2Bot (+ `.پیو ربات @x`). No rate caps by owner's decision; emergency stop `.پیو توقف`. |
+| PewPew UI | `.پنل` → ⚡ دسترسی سریع → «🏹 پیو پیو» page (`qa_pp_view`, toggles per chat, 3 chats/page) and mini-app tab «پیو پیو» (`api_state/api_op` → `POST /miniapp/pew`). |
+| Quick access v3 | every section shows its **full usage guide** and, below it, all its toggle buttons (3-3-1-3-3 grid) that change settings in place (`QA_TOGGLES`, `qa:tg`/`qa:tr`, via `miniapp_api.apply_toggle`). New sections: قالب متن, ضد حذف, حضور, ترجمه, رادار. Extra guides in `EXTRA_HELP`. |
+| Radar (`self_tools/radar.py`) | `.رادار` (deep user report; history only from first sight), `.کلون` / `.بازگردانی کامل` (original identity saved once under `<db dir>/clone/<uid>`), `.شکارچی` (profile hunter, polls every 60 s, max 20, alerts to Saved Messages), `.آنالیز` (group stats). «Who viewed my profile» is impossible and not built. |
+| Mini app | custom SVG icon sprite (`#i-*`, gradient strokes) instead of emoji for categories/tiles/nav, animated loading screen (`#boot`), PewPew tab, fonts: local `/fonts/*` first, then jsDelivr (`@fontsource/lalezar`, `vazirmatn@33.0.3`), then Google Fonts. **No font file is bundled** (build env had no internet). |
+| AI | the ad «for buy lifetime access … pm : @tlgurl» came from the **PM/inline GPT-bot layers** (`FreeGPT4Bot`…, `chatgpt_query_bot`), not Pollinations. `_ai_strip_ads` + wider `_ai_is_junk` now run on **every** layer; layer order is Groq (env `GROQ_API_KEY`) → g4f → PM bots → inline bot. `/ai` (Pollinations) also strips ad lines. |
 
 
 ## 0. How to use this file in a new conversation

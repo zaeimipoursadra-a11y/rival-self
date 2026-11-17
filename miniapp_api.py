@@ -39,6 +39,24 @@ NEEDS_BANNER = ('tabchi_pv', 'tabchi_gp', 'tabchi_smart')
 TR = {'off': None, 'en': 'en', 'ru': 'ru', 'zh-CN': 'zh-CN'}
 
 
+async def apply_toggle(g, uid, key, val=None):
+    """Flip/cycle one setting for a running self. -> (ok, err, settings). Shared by the mini app and the bot panel."""
+    if uid not in g['ACTIVE_BOTS']:
+        return False, 'سلف شما روشن نیست.', None
+    if g['_activation_wait_left'](uid) > 0:
+        return False, 'فعال‌سازی در انتظار است؛ کمی بعد دوباره امتحان کنید.', None
+    if str(key or '').startswith('ai_'):
+        err = _ai_toggle(g, uid, key)
+        return (not err), (err or ''), _settings(g, uid)
+    s, err = await _toggle(g, uid, key, val)
+    if err:
+        return False, err, _settings(g, uid)
+    if s:
+        g['data_manager'].update_user_data(uid, {'settings': s})
+        g['_commit_and_broadcast_shards']('miniapp-settings')
+    return True, '', _settings(g, uid)
+
+
 def _auth(g, init):
     """Validate Telegram initData; return user id or None."""
     try:
@@ -334,13 +352,18 @@ def make_app(g):
         rs = e.restriction(uid)
         return {'ok': not err, 'err': err, 'history': hist, 'restricted': bool(rs),
                 'restricted_until': (rs or {}).get('until', 0), 'gift': f'https://t.me/{bot}?start=gift',
-                'balance': bal, 'toman': E.Economy.toman(bal),
+                'pro': (e.is_pro(uid) or uid == g['ROOT_ADMIN']), 'balance': bal, 'toman': E.Economy.toman(bal),
                 'days': 9999 if _is_admin(g, uid) else e.days_left(uid), 'rank': e.rank(uid), 'top': top,
                 'ref': f'https://t.me/{bot}?start=ref_{uid}', 'bot': bot,
                 'month_cost': E.DIAMONDS_PER_MONTH}
 
+    async def pew_api(uid, b):
+        from self_tools import pewpew
+        pewpew._G = g
+        return pewpew.api_op(g, uid, b) if b.get('op') else pewpew.api_state(g, uid)
+
     app = web.Application()
-    for p, fn in (('state', state), ('set', setv), ('admin', admin), ('eco', eco_api)):
+    for p, fn in (('state', state), ('set', setv), ('admin', admin), ('eco', eco_api), ('pew', pew_api)):
         app.router.add_route('*', '/miniapp/' + p, handler(fn))
 
     # The dashboard posts client-side errors here (best effort). Rate-limited, never touches bot state.
